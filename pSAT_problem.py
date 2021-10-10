@@ -1,5 +1,6 @@
 #Boolean satisfiability problem solver with continuous dynamical system
 import numpy as np
+import matplotlib.pyplot as plt
 
 class SATProblem:
     def __init__(self, cnf_file_name):
@@ -106,26 +107,31 @@ class CTDSolver:
     def __init__(self, SATproblem, integrator) -> None:
         self.SATproblem = SATproblem
         self.integrator = integrator
-        self.s = 2*np.random.rand( self.SATproblem.number_of_variables ) - np.array( [1 for i in range(self.SATproblem.number_of_variables)] )
+        self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [1 for i in range(self.SATproblem.number_of_variables)] )
         self.a = np.random.rand( self.SATproblem.number_of_clauses )
+        self.aux = []
+        self.traj = []
 
-    def K_m(self, m, s):
+    def K_m1(self, m, s):
+        """Depricated"""
         return np.prod([( 1-self.SATproblem.c_mj(m,j) * s[j] ) for j in range(self.SATproblem.number_of_variables)])
     
+    def K_m2(self, K_mi, s, i):
+        """Depricated"""
+        return K_mi*s[i]
+
+    def K_mi_m(self, m, i, s):
+        K_mi = self.K_mi(m, i, s)
+        return K_mi*K_mi*(1-self.SATproblem.c_mj(m,i)*s[i])
+
     def K_mi(self, m, i, s):
-        #prod = 1.0
-        #for j in range(self.SATproblem.number_of_variables):
-        #    if j != i:
-        #        prod *= ( 1-self.SATproblem.c_mj(m,j) * s[j] )
-        #return prod
-        return self.K_m(m, s)/( 1-self.SATproblem.c_mj(m,i) * s[i] )
+        return np.prod([( 1-self.SATproblem.c_mj(m,j) * s[j] ) for j in range(self.SATproblem.number_of_variables) if i != j])
     
     def V(self):
         return sum([self.a[m]*self.K_m(m) for m in range(self.SATproblem.number_of_clauses)])
 
     def gradV_i(self, i, s):
-        print(str(i) + " out of " + str(self.SATproblem.number_of_variables))
-        return sum([2*self.a[m]*self.SATproblem.c_mj(m, i)*self.K_mi(m, i, s)*self.K_m(m, s) for m in range(self.SATproblem.number_of_clauses) ])
+        return sum([2*self.a[m]*self.SATproblem.c_mj(m, i)*self.K_mi_m(m, i, s) for m in range(self.SATproblem.number_of_clauses) ])
 
     def gradV(self):
         vecK = np.array([self.K_m(m, self.s) for m in range(self.SATproblem.number_of_clauses)])
@@ -135,7 +141,7 @@ class CTDSolver:
         return np.dot(self.a, np.multiply(self.SATproblem.c, matK)) + vecK
 
     def mgradV(self, s):
-        return (-1)*np.array([self.gradV_i(i, s) for i in range(self.SATproblem.number_of_variables)])
+        return np.array([self.gradV_i(i, s) for i in range(self.SATproblem.number_of_variables)])
 
     def x(self):
         def boolean(value):
@@ -145,7 +151,7 @@ class CTDSolver:
                 return True
         return [boolean(0.5*(self.s[i]+1)) for i in range(self.SATproblem.number_of_variables)]
 
-    def check_solution(self) -> bool:
+    def check_solution(self, sol = None) -> bool:
         def check_row(row, solution):
             for elem in row:
                 if elem > 0:
@@ -160,8 +166,10 @@ class CTDSolver:
                     raise ValueError
 
         incorrect_flag = False
-
-        test_solution = self.x()
+        if not sol:
+            test_solution = self.x()
+        else:
+            test_solution = sol
         for i, row in enumerate(self.SATproblem.clauses):
             if not check_row(row, test_solution):
                 incorrect_flag = True
@@ -172,13 +180,38 @@ class CTDSolver:
         else:
             return True
 
-    def solve(self):
-        #while(not self.check_solution()):
-        #for i in range(self.integrator.Nmax):
+    def save_states(self):
+        self.aux.append(self.a)
+        self.traj.append(self.s)
+
+    def step_function(self):
+        self.save_states()
         new_s = self.integrator.step(self.s, lambda s : self.mgradV(s))
-        new_a = self.integrator.step(self.a, lambda a, s : np.array([a[m] * self.K_m(m, s) for m in range(self.SATproblem.number_of_clauses)]) )
+        new_a = self.integrator.step(self.a, lambda a : np.array([a[m] * self.K_m1(m, self.s) for m in range(self.SATproblem.number_of_clauses)]) )
+        if (np.linalg.norm(self.s-new_s) < 0.001 and not self.integrator.h > 0.05):
+            self.integrator.h *= 2
+        elif (np.linalg.norm(self.s-new_s) > 0.01 and not self.integrator.h < 0.0001):
+            self.integrator.h /= 2
+
         self.s = new_s
         self.a = new_a
-        print("step " + str(i) + '\n')
 
-
+    def plot_traj(self):
+        plt.grid(True)
+        plt.title('Spin variables')
+        for i in range(self.SATproblem.number_of_variables):
+            x = [j for j in range(len(self.traj))]
+            y = [self.traj[j][i] for j in range(len(self.traj))]
+            plt.plot(x, y, label=str(i))
+        plt.legend()
+        plt.show()
+    
+    def plot_aux(self):
+        plt.grid(True)
+        plt.title("Aux variables")
+        for i in range(self.aux[0].size):
+            x = [j for j in range(len(self.aux))]
+            y = [self.aux[j][i] for j in range(len(self.aux))]
+            plt.plot(x, y, label=str(i))
+        plt.legend()
+        plt.show()
