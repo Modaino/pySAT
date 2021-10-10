@@ -107,8 +107,9 @@ class CTDSolver:
     def __init__(self, SATproblem, integrator) -> None:
         self.SATproblem = SATproblem
         self.integrator = integrator
-        self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [1 for i in range(self.SATproblem.number_of_variables)] )
-        self.a = np.random.rand( self.SATproblem.number_of_clauses )
+        self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
+        #self.a = np.random.rand( self.SATproblem.number_of_clauses )
+        self.a = np.array( [1 for i in range(self.SATproblem.number_of_clauses)] )
         self.aux = []
         self.traj = []
 
@@ -116,29 +117,15 @@ class CTDSolver:
         """Depricated"""
         return np.prod([( 1-self.SATproblem.c_mj(m,j) * s[j] ) for j in range(self.SATproblem.number_of_variables)])
     
-    def K_m2(self, K_mi, s, i):
-        """Depricated"""
-        return K_mi*s[i]
-
     def K_mi_m(self, m, i, s):
         K_mi = self.K_mi(m, i, s)
         return K_mi*K_mi*(1-self.SATproblem.c_mj(m,i)*s[i])
 
     def K_mi(self, m, i, s):
-        return np.prod([( 1-self.SATproblem.c_mj(m,j) * s[j] ) for j in range(self.SATproblem.number_of_variables) if i != j])
+        return np.prod([( 1-self.SATproblem.c_mj(m,j) * s[j]/2 ) for j in range(self.SATproblem.number_of_variables) if i != j])
     
-    def V(self):
-        return sum([self.a[m]*self.K_m(m) for m in range(self.SATproblem.number_of_clauses)])
-
     def gradV_i(self, i, s):
         return sum([2*self.a[m]*self.SATproblem.c_mj(m, i)*self.K_mi_m(m, i, s) for m in range(self.SATproblem.number_of_clauses) ])
-
-    def gradV(self):
-        vecK = np.array([self.K_m(m, self.s) for m in range(self.SATproblem.number_of_clauses)])
-        print('yey')
-        matK = np.array([[self.K_mi(m, i, self.s) for i in range(self.SATproblem.number_of_variables) ] for m in range(self.SATproblem.number_of_clauses)])
-        print('yey')
-        return np.dot(self.a, np.multiply(self.SATproblem.c, matK)) + vecK
 
     def mgradV(self, s):
         return np.array([self.gradV_i(i, s) for i in range(self.SATproblem.number_of_variables)])
@@ -185,16 +172,33 @@ class CTDSolver:
         self.traj.append(self.s)
 
     def step_function(self):
-        self.save_states()
-        new_s = self.integrator.step(self.s, lambda s : self.mgradV(s))
+        new_s = self.integrator.step(self.s, lambda s_ : self.mgradV(s_))
         new_a = self.integrator.step(self.a, lambda a : np.array([a[m] * self.K_m1(m, self.s) for m in range(self.SATproblem.number_of_clauses)]) )
-        if (np.linalg.norm(self.s-new_s) < 0.001 and not self.integrator.h > 0.05):
+        
+        #Adaptive step size
+        if (np.linalg.norm(self.s-new_s) < 0.001 and not self.integrator.h > 0.1):
             self.integrator.h *= 2
         elif (np.linalg.norm(self.s-new_s) > 0.01 and not self.integrator.h < 0.0001):
             self.integrator.h /= 2
 
         self.s = new_s
         self.a = new_a
+
+    def solve(self, max_steps = 5000):
+        for i in range(max_steps):
+            self.step_function()
+            if i%10 == 0:
+                self.save_states()
+                if self.check_solution():
+                    break
+            if i%1000 == 0 and i != 0:
+                print("Restart")
+                self.aux = []
+                self.traj = []
+                self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
+                self.a = np.array( [1 for i in range(self.SATproblem.number_of_clauses)] )
+
+
 
     def plot_traj(self):
         plt.grid(True)
