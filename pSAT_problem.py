@@ -1,6 +1,5 @@
 #Boolean satisfiability problem solver with continuous dynamical system
 import numpy as np
-import matplotlib.pyplot as plt
 
 class SATProblem:
     def __init__(self, cnf_file_name):
@@ -74,9 +73,9 @@ class SATProblem:
 
     def c_mj(self, m, j):
         for variable in self.clauses[m]:
-            if variable == j:
+            if variable == (j+1):
                 return 1
-            elif variable == -j:
+            elif variable == -(j+1):
                 return -1
         return 0
 
@@ -114,9 +113,11 @@ class CTDSolver:
         self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
         #self.a = np.random.rand( self.SATproblem.number_of_clauses )
         self.a = np.array( [1 for i in range(self.SATproblem.number_of_clauses)] )
+        self.time = 0
         self.aux = []
         self.traj = []
         self.diff_vecs = []
+        self.times = []
 
     def K_m1(self, m, s):
         """Depricated"""
@@ -170,24 +171,28 @@ class CTDSolver:
     def save_states(self):
         self.aux.append(self.a)
         self.traj.append(self.s)
+        self.times.append(self.time)
 
-    def step_function(self):
+    def step_function(self, adaptive_flag):
         new_s = self.integrator.step(self.s, lambda s_ : self.mgradV(s_))
         new_a = self.integrator.step(self.a, lambda a : np.array([a[m] * self.K_m1(m, self.s) for m in range(self.SATproblem.number_of_clauses)]) )
-        diff_vec = self.s-new_s
+        self.time += self.integrator.h
+        diff_vec_s = self.s-new_s
+        diff_vec_a = self.a-new_a
+        diff_vec = np.concatenate((diff_vec_s, diff_vec_a), axis=None)
         #Adaptive step size
-        if (np.linalg.norm(diff_vec) < 0.001 and not self.integrator.h > 0.1):
-            self.integrator.h *= 2
-        elif (np.linalg.norm(diff_vec) > 0.01 and not self.integrator.h < 0.0001):
-            self.integrator.h /= 2
-
-        self.diff_vecs.append(diff_vec)
+        if adaptive_flag:
+            if (np.linalg.norm(diff_vec) < 0.001 and not self.integrator.h > 0.2):
+                self.integrator.h *= 2
+            elif (np.linalg.norm(diff_vec) > 0.01 and not self.integrator.h < 0.00005):
+                self.integrator.h /= 2
+        self.diff_vecs.append(diff_vec_s)
         self.s = new_s
-        self.a = new_a
+        self.a = new_a 
 
-    def solve(self, max_steps = 6000):
+    def solve_N(self, max_steps = 6000, adaptive_flag= True):
         for i in range(max_steps):
-            self.step_function()
+            self.step_function(adaptive_flag)
             if i%10 == 0:
                 self.save_states()
                 if self.check_solution():
@@ -199,22 +204,67 @@ class CTDSolver:
                 self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
                 self.a = np.array( [1 for i in range(self.SATproblem.number_of_clauses)] )
 
+    def solve(self, max_time = 2, adaptive_flag=True):
+        iter_step = 0
+        while(self.time < max_time):
+            self.step_function(adaptive_flag)
+            if iter_step%50 == 0:
+                self.save_states()
+                if self.check_solution():
+                    break
+            iter_step += 1
+
     def plot_traj(self):
+        import matplotlib.pyplot as plt
         plt.grid(True)
         plt.title('Spin variables')
         for i in range(self.SATproblem.number_of_variables):
-            x = [j for j in range(len(self.traj))]
+            x = self.times
+            #x = [j for j in range(len(self.traj))]
             y = [self.traj[j][i] for j in range(len(self.traj))]
             plt.plot(x, y, label=str(i+1))
         plt.legend()
         plt.show()
     
     def plot_aux(self):
+        import matplotlib.pyplot as plt
         plt.grid(True)
         plt.title("Aux variables")
         for i in range(self.aux[0].size):
-            x = [j for j in range(len(self.aux))]
+            #x = [j for j in range(len(self.aux))]
+            x = self.times
             y = [self.aux[j][i] for j in range(len(self.aux))]
             plt.plot(x, y, label=str(i+1))
         #plt.legend()
+        plt.show()
+
+    def save_trajs(self):
+        import matplotlib.pyplot as plt
+        plt.grid(True)
+        plt.title('Spin variables')
+        for i in range(self.SATproblem.number_of_variables):
+            x = self.times
+            y = [self.traj[j][i] for j in range(len(self.traj))]
+            plt.plot(x, y, label=str(i+1))
+        plt.legend()
+        plt.savefig("spin.png")
+
+        plt.grid(True)
+        plt.title("Aux variables")
+        for i in range(self.aux[0].size):
+            x = self.times
+            y = [self.aux[j][i] for j in range(len(self.aux))]
+            plt.plot(x, y, label=str(i+1))
+        plt.savefig("maux.png")
+    
+    def save_aux(self):
+        import matplotlib.pyplot as plt
+        plt.grid(True)
+        plt.title("Aux variables")
+        for i in range(self.aux[0].size):
+            x = self.times
+            y = [self.aux[j][i] for j in range(len(self.aux))]
+            plt.plot(x, y, label=str(i+1))
+        #plt.legend()
+        plt.savefig("aux.png")
         plt.show()
