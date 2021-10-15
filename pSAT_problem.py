@@ -8,17 +8,21 @@ class SATProblem:
             lines = cnf_file.readlines()
             self.number_of_variables = int(lines[0].split(' ')[2])
             self.number_of_clauses = int(lines[0].split(' ')[3])
+            self.number_of_literals = []
 
             #(v)^(v)#
             clause_and = []
             for i in range(self.number_of_clauses + 1):
+                literal_number = 0
                 if i > 0:
                     clause_or = []
                     for variable_str in lines[i].split(' '):
                         variable = int(variable_str)
                         if variable != 0:
                             clause_or.append(variable)
+                            literal_number += 1
                     clause_and.append(clause_or)
+                    self.number_of_literals.append(literal_number)
 
             self.clauses = clause_and
 
@@ -112,6 +116,7 @@ class CTDSolver:
         self.a = np.array( [1 for i in range(self.SATproblem.number_of_clauses)] )
         self.aux = []
         self.traj = []
+        self.diff_vecs = []
 
     def K_m1(self, m, s):
         """Depricated"""
@@ -122,7 +127,7 @@ class CTDSolver:
         return K_mi*K_mi*(1-self.SATproblem.c_mj(m,i)*s[i])
 
     def K_mi(self, m, i, s):
-        return np.prod([( 1-self.SATproblem.c_mj(m,j) * s[j]/2 ) for j in range(self.SATproblem.number_of_variables) if i != j])
+        return pow(2, -self.SATproblem.number_of_literals[m]) * np.prod([( 1-self.SATproblem.c_mj(m,j) * s[j] ) for j in range(self.SATproblem.number_of_variables) if i != j])
     
     def gradV_i(self, i, s):
         return sum([2*self.a[m]*self.SATproblem.c_mj(m, i)*self.K_mi_m(m, i, s) for m in range(self.SATproblem.number_of_clauses) ])
@@ -131,12 +136,7 @@ class CTDSolver:
         return np.array([self.gradV_i(i, s) for i in range(self.SATproblem.number_of_variables)])
 
     def x(self):
-        def boolean(value):
-            if value <= 0.5:
-                return False
-            elif value > 0.5:
-                return True
-        return [boolean(0.5*(self.s[i]+1)) for i in range(self.SATproblem.number_of_variables)]
+        return [True if elem > 0 else False for elem in self.s]
 
     def check_solution(self, sol = None) -> bool:
         def check_row(row, solution):
@@ -174,31 +174,30 @@ class CTDSolver:
     def step_function(self):
         new_s = self.integrator.step(self.s, lambda s_ : self.mgradV(s_))
         new_a = self.integrator.step(self.a, lambda a : np.array([a[m] * self.K_m1(m, self.s) for m in range(self.SATproblem.number_of_clauses)]) )
-        
+        diff_vec = self.s-new_s
         #Adaptive step size
-        if (np.linalg.norm(self.s-new_s) < 0.001 and not self.integrator.h > 0.1):
+        if (np.linalg.norm(diff_vec) < 0.001 and not self.integrator.h > 0.1):
             self.integrator.h *= 2
-        elif (np.linalg.norm(self.s-new_s) > 0.01 and not self.integrator.h < 0.0001):
+        elif (np.linalg.norm(diff_vec) > 0.01 and not self.integrator.h < 0.0001):
             self.integrator.h /= 2
 
+        self.diff_vecs.append(diff_vec)
         self.s = new_s
         self.a = new_a
 
-    def solve(self, max_steps = 5000):
+    def solve(self, max_steps = 6000):
         for i in range(max_steps):
             self.step_function()
             if i%10 == 0:
                 self.save_states()
                 if self.check_solution():
                     break
-            if i%1000 == 0 and i != 0:
+            if i%2000 == 0 and i != 0:
                 print("Restart")
                 self.aux = []
                 self.traj = []
                 self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
                 self.a = np.array( [1 for i in range(self.SATproblem.number_of_clauses)] )
-
-
 
     def plot_traj(self):
         plt.grid(True)
@@ -206,7 +205,7 @@ class CTDSolver:
         for i in range(self.SATproblem.number_of_variables):
             x = [j for j in range(len(self.traj))]
             y = [self.traj[j][i] for j in range(len(self.traj))]
-            plt.plot(x, y, label=str(i))
+            plt.plot(x, y, label=str(i+1))
         plt.legend()
         plt.show()
     
@@ -216,6 +215,6 @@ class CTDSolver:
         for i in range(self.aux[0].size):
             x = [j for j in range(len(self.aux))]
             y = [self.aux[j][i] for j in range(len(self.aux))]
-            plt.plot(x, y, label=str(i))
-        plt.legend()
+            plt.plot(x, y, label=str(i+1))
+        #plt.legend()
         plt.show()
