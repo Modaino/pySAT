@@ -106,6 +106,14 @@ class RK4( Integrator ):
         k4 = self.h*f(y+k3)
         return y + (k1 + 2 * k2 + 2 * k3 + k4) / 6.0 
 
+class ForwardEuler( Integrator ):
+    """Explicit forward euler method integrator"""
+    def __init__(self, Nmax = 10000, h = 0.0025) -> None:
+        Integrator.__init__(self, Nmax, h)
+    
+    def step(self, y, f):
+        return y + self.h*f(y)
+
 class CTDSolver:
     def __init__(self, SATproblem, integrator) -> None:
         self.SATproblem = SATproblem
@@ -116,6 +124,7 @@ class CTDSolver:
         self.time = 0
         self.aux = []
         self.traj = []
+        self.diff_vec = None
         self.diff_vecs = []
         self.times = []
 
@@ -135,6 +144,20 @@ class CTDSolver:
 
     def mgradV(self, s):
         return np.array([self.gradV_i(i, s) for i in range(self.SATproblem.number_of_variables)])
+
+    def Jakobian11(self,i,l):
+        N = self.SATproblem.number_of_variables
+        M = self.SATproblem.number_of_clauses
+        summ = 0
+        for m in range(M):
+            prod = 1
+            for j in range(N): 
+                if j != i and j!=l:
+                    prod *= (1-self.SATproblem.c_mj(m, j)*self.s[j])
+            prod*=prod
+            prod *= (1-self.SATproblem.c_mj(m, l)*self.s[l])*(3-self.SATproblem.c_mj(m, l))
+            summ += pow(2, 1-2*self.SATproblem.number_of_literals[m])*self.a[m]*self.SATproblem.c_mj(m, i)*self.SATproblem.c_mj(m, l)*prod
+        return summ
 
     def x(self):
         return [True if elem > 0 else False for elem in self.s]
@@ -172,24 +195,30 @@ class CTDSolver:
         self.aux.append(self.a)
         self.traj.append(self.s)
         self.times.append(self.time)
+        self.diff_vecs.append(self.diff_vec)
 
     def step_function(self, adaptive_flag):
+        #Calculating next step
         new_s = self.integrator.step(self.s, lambda s_ : self.mgradV(s_))
         new_a = self.integrator.step(self.a, lambda a : np.array([a[m] * self.K_m1(m, self.s) for m in range(self.SATproblem.number_of_clauses)]) )
-        self.time += self.integrator.h
+        
+         
         diff_vec_s = self.s-new_s
         diff_vec_a = self.a-new_a
-        diff_vec = np.concatenate((diff_vec_s, diff_vec_a), axis=None)
-        #Adaptive step size
-        if adaptive_flag:
-            if (np.linalg.norm(diff_vec) < 0.001 and not self.integrator.h > 0.2):
-                self.integrator.h *= 2
-            elif (np.linalg.norm(diff_vec) > 0.01 and not self.integrator.h < 0.00005):
-                self.integrator.h /= 2
-        self.diff_vecs.append(diff_vec_s)
+        self.diff_vec = np.concatenate((diff_vec_s, diff_vec_a), axis=None)
+
+        #Updating dynamic variables
+        self.time += self.integrator.h
         self.s = new_s
         self.a = new_a 
 
+        #Adaptive step size
+        if adaptive_flag:
+            if (np.linalg.norm(self.diff_vec) < 0.001 and not self.integrator.h > 0.2):
+                self.integrator.h *= 2
+            elif (np.linalg.norm(self.diff_vec) > 0.01 and not self.integrator.h < 0.00005):
+                self.integrator.h /= 2
+        
     def solve_N(self, max_steps = 6000, adaptive_flag= True):
         for i in range(max_steps):
             self.step_function(adaptive_flag)
@@ -211,8 +240,12 @@ class CTDSolver:
             if iter_step%50 == 0:
                 self.save_states()
                 if self.check_solution():
+                    print("Solution found")
                     break
             iter_step += 1
+        
+        if self.time >= max_time:
+            print("Max time reached")
 
     def plot_traj(self):
         import matplotlib.pyplot as plt
