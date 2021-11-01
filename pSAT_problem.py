@@ -114,18 +114,23 @@ class ForwardEuler( Integrator ):
     def step(self, y, f):
         return y + self.h*f(y)
 
-class CTDSolver:
+class CTDSolver: 
     def __init__(self, SATproblem, integrator) -> None:
         self.SATproblem = SATproblem
         self.integrator = integrator
-        self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
+
+        #Dynamical variables
+        self.s = np.array( [0.0 for i in range(self.SATproblem.number_of_variables)] )
+        #self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
         #self.a = np.random.rand( self.SATproblem.number_of_clauses )
         self.a = np.array( [1 for i in range(self.SATproblem.number_of_clauses)] )
         self.time = 0
+        self.M = np.identity( self.SATproblem.number_of_variables )
+
+        #Records
         self.aux = []
         self.traj = []
         self.diff_vec = None
-        self.diff_vecs = []
         self.times = []
 
     def K_m1(self, m, s):
@@ -145,7 +150,7 @@ class CTDSolver:
     def mgradV(self, s):
         return np.array([self.gradV_i(i, s) for i in range(self.SATproblem.number_of_variables)])
 
-    def Jakobian11(self,i,l):
+    def Jakobian11_il(self,i,l):
         N = self.SATproblem.number_of_variables
         M = self.SATproblem.number_of_clauses
         summ = 0
@@ -154,10 +159,14 @@ class CTDSolver:
             for j in range(N): 
                 if j != i and j!=l:
                     prod *= (1-self.SATproblem.c_mj(m, j)*self.s[j])
-            prod*=prod
+            prod *=prod
             prod *= (1-self.SATproblem.c_mj(m, l)*self.s[l])*(3-self.SATproblem.c_mj(m, l))
             summ += pow(2, 1-2*self.SATproblem.number_of_literals[m])*self.a[m]*self.SATproblem.c_mj(m, i)*self.SATproblem.c_mj(m, l)*prod
         return summ
+
+    def Jakobian11(self):
+        N = self.SATproblem.number_of_variables
+        return np.array([[self.Jakobian11_il(i, l) for l in range(N)] for i in range(N)])
 
     def x(self):
         return [True if elem > 0 else False for elem in self.s]
@@ -195,17 +204,19 @@ class CTDSolver:
         self.aux.append(self.a)
         self.traj.append(self.s)
         self.times.append(self.time)
-        self.diff_vecs.append(self.diff_vec)
 
-    def step_function(self, adaptive_flag):
+    def step_function(self, adaptive_flag, tangental_flag = False):
         #Calculating next step
         new_s = self.integrator.step(self.s, lambda s_ : self.mgradV(s_))
         new_a = self.integrator.step(self.a, lambda a : np.array([a[m] * self.K_m1(m, self.s) for m in range(self.SATproblem.number_of_clauses)]) )
-        
-         
-        diff_vec_s = self.s-new_s
-        diff_vec_a = self.a-new_a
-        self.diff_vec = np.concatenate((diff_vec_s, diff_vec_a), axis=None)
+
+        #Evolving tangental map
+        if tangental_flag:
+            J = self.Jakobian11()
+            new_M = self.integrator.step(self.M, lambda M_ : np.dot(J, M_))
+            Q, R = np.linalg.qr(new_M, 'complete')
+            S = np.dpt(np.transpose(Q), np.dot(J, Q))
+            self.M = new_M
 
         #Updating dynamic variables
         self.time += self.integrator.h
@@ -214,6 +225,9 @@ class CTDSolver:
 
         #Adaptive step size
         if adaptive_flag:
+            diff_vec_s = self.s-new_s
+            diff_vec_a = self.a-new_a
+            self.diff_vec = np.concatenate((diff_vec_s, diff_vec_a), axis=None)
             if (np.linalg.norm(self.diff_vec) < 0.001 and not self.integrator.h > 0.2):
                 self.integrator.h *= 2
             elif (np.linalg.norm(self.diff_vec) > 0.01 and not self.integrator.h < 0.00005):
@@ -233,20 +247,30 @@ class CTDSolver:
                 self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
                 self.a = np.array( [1 for i in range(self.SATproblem.number_of_clauses)] )
 
-    def solve(self, max_time = 2, adaptive_flag=True):
+    def solve(self, max_time = 2, adaptive_flag=True, check_frequency = 1):
         iter_step = 0
         while(self.time < max_time):
             self.step_function(adaptive_flag)
-            if iter_step%50 == 0:
+            if iter_step%check_frequency == 0:
                 self.save_states()
                 if self.check_solution():
                     print("Solution found")
                     break
             iter_step += 1
-        
+        print(self.time)
         if self.time >= max_time:
             print("Max time reached")
 
+    def solve_upto(self, T):
+        adaptive_flag = True
+        UPPERLIMIT = 10000
+        miter = 0
+        while(self.time < T and miter < UPPERLIMIT):
+            miter += 1
+            self.step_function(adaptive_flag, tangental_flag=True)
+            if miter%10:
+                self.save_states()
+            
     def plot_traj(self):
         import matplotlib.pyplot as plt
         plt.grid(True)
