@@ -19,7 +19,7 @@ class Problem:
         pass
 
 class Rössler(Problem):
-    def __init__(self, a = 0.398, b = 2.0, c=4):
+    def __init__(self, a = 0.398, b = 2.0, c=4) -> None:
         super().__init__(3)
         self.a = a
         self.b = b
@@ -32,7 +32,7 @@ class Rössler(Problem):
         return np.array([ [0.0, -1.0, -1.0], [1.0, self.a, 0.0], [s[2], 0.0, s[0]-self.c] ])
 
 class SAT(Problem):
-    def __init__(self, cnf_file_name):
+    def __init__(self, cnf_file_name) -> None:
         with open(cnf_file_name) as cnf_file:
             lines = cnf_file.readlines()
             Problem.__init__(self, int(lines[0].split(' ')[2]))
@@ -89,18 +89,12 @@ class SAT(Problem):
             for i, row in enumerate(self.clauses):
                 if not check_row(row, solution):
                     incorrect_flag = True
-                    #print(row)
-                    #print(i)
-                    #print([solution[abs(x)] for x in row])
-                    #raise RuntimeError
                     break
 
         if incorrect_flag:
             return False
-            #print('The solution "'+ sol_file_name +'" to '+ assignment +' is NOT correct')
         else:
             return True
-            #print('The solution "'+ sol_file_name +'" to '+ assignment +' is correct')
 
     def c_mj(self, m, j):
         for variable in self.clauses[m]:
@@ -109,6 +103,53 @@ class SAT(Problem):
             elif variable == -(j+1):
                 return -1
         return 0
+
+    def Jakobian_il(self,i,l,s,a):
+        N_ = self.number_of_variables
+        M_ = self.number_of_clauses
+        summ = 0
+        for m in range(M_):
+            prod = 1
+            for j in range(N_): 
+                if j != i and j!=l:
+                    prod *= (1-self.c_mj(m, j)*s[j])
+            prod *=prod
+            prod *= (1-self.c_mj(m, l)*s[l])*(3-self.c_mj(m, l))
+            summ += pow(2, 1-2*self.number_of_literals[m])*a[m]*self.c_mj(m, i)*self.c_mj(m, l)*prod
+        return summ
+
+    def Jakobian(self, s, a):
+        N_ = self.number_of_variables
+        return np.array([[self.Jakobian_il(i, l, s, a) for l in range(N_)] for i in range(N_)])
+
+    def K_m(self, m, s):
+        return np.prod([( 1-self.c_mj(m,j) * s[j] ) for j in range(self.number_of_variables)])
+
+    def K_mi_m(self, m, i, s):
+        K_mi = self.K_mi(m, i, s)
+        return K_mi*K_mi*(1-self.c_mj(m,i)*s[i])
+
+    def K_mi(self, m, i, s):
+        return pow(2, -self.number_of_literals[m]) * np.prod([( 1-self.c_mj(m,j) * s[j] ) for j in range(self.number_of_variables) if i != j])
+
+    def gradV_i(self, i, s, a):
+        return sum([2*a[m]*self.c_mj(m, i)*self.K_mi_m(m, i, s) for m in range(self.number_of_clauses) ])
+
+    def rhs(self, s, a):
+        return np.array([self.gradV_i(i, s, a) for i in range(self.number_of_variables)])
+
+class Lorenz(Problem):
+    def __init__(self, sigma=10.0, rho=28.0, beta=2.66667):
+        self.sigma = sigma
+        self.rho = rho
+        self.beta = beta
+        super().__init__(3)
+
+    def rhs(self, s):
+        return np.array([ self.sigma*( s[1]-s[0] ), s[0]*(self.rho-s[2])-s[1], s[1]*s[0]-self.beta*s[2] ])
+    
+    def Jakobian(self, s):
+        return np.array([ [-self.sigma, self.sigma, 0],[ self.rho-s[2], -1, s[0] ], [s[1], s[0], -self.beta] ])
 
 #Numerical integrators
 
@@ -164,15 +205,14 @@ class Solver:
         self.diff_vec = None
         self.times = []
 
-    def save_states(self):
+    def save_states(self) -> None:
         """Saves the current state to member"""
         self.traj.append(self.s)
         self.times.append(self.time)
 
-    def step_function(self, adaptive_flag, tangental_flag):
+    def step_function(self, adaptive_flag, tangental_flag, lower_diff_bound, upper_diff_bound, lower_h_bound, upper_h_bound) -> None:
         #Calculating next step
         new_s = self.integrator.step(self.s, lambda s_ : self.problem.rhs(s_))
-
         #Evolving tangental map
         if tangental_flag:
             Jak = self.problem.Jakobian(self.s)
@@ -186,19 +226,19 @@ class Solver:
         #Adaptive step size
         if adaptive_flag:
             self.diff_vec = self.s- new_s
-            if (np.linalg.norm(self.diff_vec) < 0.00005 and not self.integrator.h > 0.2):
+            if (np.linalg.norm(self.diff_vec) < lower_diff_bound and not self.integrator.h > upper_h_bound):
                 self.integrator.h *= 2
-            elif (np.linalg.norm(self.diff_vec) > 0.01 and not self.integrator.h < 0.00005):
+            elif (np.linalg.norm(self.diff_vec) > upper_diff_bound and not self.integrator.h < lower_h_bound):
                 self.integrator.h /= 2
  
-    def solve(self, time_limit = 2.0, adaptive_flag = True, tangental_flag = True, save_frequency = 10):
+    def solve(self, time_limit = 2.0, adaptive_flag = True, tangental_flag = True, save_frequency = 10, lower_diff_bound = 0.00005, upper_diff_bound = 0.01, lower_h_bound = 0.00005, upper_h_bound = 0.01) -> None:
         #setting up variables
         iter_step = 0
         if not hasattr(self, 'M') and tangental_flag:
             self.M = np.identity(len(self.s))
 
         while time_limit >= self.time:
-            self.step_function(adaptive_flag, tangental_flag)
+            self.step_function(adaptive_flag, tangental_flag, lower_diff_bound, upper_diff_bound, lower_h_bound, upper_h_bound)
             if iter_step%save_frequency:
                 self.save_states()
             iter_step += 1
@@ -218,13 +258,109 @@ class Solver:
         if self.M is None:
             return None
         else:
-            eigvals = np.linalg.eigvalsh( np.dot(self.M, np.transpose(self.M)) )
+            self.M = np.array(self.M, dtype=np.float64)
+            MtM = np.dot(np.transpose(self.M),self.M)
+            eigvals = np.linalg.eigvalsh( MtM )
+            for elem in eigvals:
+                if 0.0 > elem:
+                    elem = 0.0
             return np.log(eigvals)/(2*self.time)
 
     def get_Lyapunov_convergence(self, max_time = 100, step_size = 0.25):
         result = []
         for i in range(int(max_time/step_size)):
+            #print("Batch complete")
             time = step_size*i
-            self.solve(time)
+            self.solve(time, upper_h_bound=0.001, upper_diff_bound=0.001)
             result.append( (self.get_Lyapunov_exponents(), time) )
         return result
+
+class CTD( Solver ):
+    def __init__(self, problem, integrator) -> None:
+        super().__init__(problem, integrator)
+        #Dynamical variables
+        #self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
+        self.a = np.array( [1 for i in range(self.problem.number_of_clauses)] )
+        self.time = 0
+
+        #Records
+        self.aux = []
+
+    def save_states(self) -> None:
+        self.aux.append(self.a)
+        return super().save_states()
+
+    def step_function(self, adaptive_flag, tangental_flag, lower_diff_bound = 0.00005, upper_diff_bound = 0.01, lower_h_bound = 0.00005, upper_h_bound = 0.01) -> None:        
+        #Calculating next step
+        new_s = self.integrator.step(self.s, lambda s_ : self.problem.rhs(s_, self.a))
+        new_a = self.integrator.step(self.a, lambda a : np.array([a[m] * self.problem.K_m(m, self.s) for m in range(self.problem.number_of_clauses)]) )
+
+        #Evolving tangental map
+        if tangental_flag:
+            Jak = self.problem.Jakobian(self.s, self.a)
+            new_M = self.integrator.step(self.M, lambda M_ : np.matmul(Jak, M_) )
+            
+        #Adaptive step size
+        if adaptive_flag:
+            diff_vec_s = self.s- new_s
+            diff_vec_a = self.a-new_a
+            if tangental_flag:
+                diff_vec_M = (self.M-new_M).flatten()
+                self.diff_vec = np.concatenate((diff_vec_s, diff_vec_a, diff_vec_M), axis=None)
+            else:
+                self.diff_vec = np.concatenate((diff_vec_s, diff_vec_a), axis=None)
+            if (np.linalg.norm(self.diff_vec) < lower_diff_bound and not self.integrator.h > upper_h_bound):
+                self.integrator.h *= 2
+            elif (np.linalg.norm(self.diff_vec) > upper_diff_bound and not self.integrator.h < lower_h_bound):
+                self.integrator.h /= 2
+
+        #Updating dynamic variables
+        self.time += self.integrator.h
+        self.s = new_s
+        self.a = new_a
+        if tangental_flag:
+            self.M = new_M
+
+    def check_solution(self, sol = None) -> bool:
+        def check_row(row, solution):
+            for elem in row:
+                if elem > 0:
+                    #or_var = or_var or solution[elem-1]
+                    if True == solution[elem-1]:
+                        return True
+                if elem < 0:
+                    if False == solution[-elem-1]:
+                        return True
+                    #or_var = or_var or not solution[-elem-1]
+                if elem == 0:
+                    raise ValueError
+
+        incorrect_flag = False
+        if not sol:
+            test_solution = [True if elem > 0 else False for elem in self.s]
+        else:
+            test_solution = sol
+        for i, row in enumerate(self.problem.clauses):
+            if not check_row(row, test_solution):
+                incorrect_flag = True
+                break
+
+        if incorrect_flag:
+            return False
+        else:
+            return True
+
+    def solve(self, time_limit=2, adaptive_flag=True, tangental_flag=True, save_frequency=10) -> None:
+        #setting up variables
+        iter_step = 0
+        if not hasattr(self, 'M') and tangental_flag:
+            self.M = np.identity(len(self.s))
+
+        while time_limit >= self.time:
+            self.step_function(adaptive_flag, tangental_flag)
+            if iter_step%save_frequency:
+                self.save_states()
+                if self.check_solution():
+                    print("Solution found")
+                    break
+            iter_step += 1
