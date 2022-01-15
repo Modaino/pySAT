@@ -1,9 +1,12 @@
 #Boolean satisfiability problem solver with continuous dynamical system
 import numpy as np
 from abc import abstractclassmethod
-from numpy.core.defchararray import array
+from random import sample, randint
+from scipy.integrate import odeint
+from ctypes import CDLL, POINTER, c_double, c_int
+#from numpy.core.defchararray import array
 
-from numpy.linalg.linalg import eigvalsh, solve
+#from numpy.linalg.linalg import eigvalsh, solve
 
 class Problem:
     """Abstract class representing a dynamical system"""
@@ -31,32 +34,55 @@ class Rössler(Problem):
     def Jakobian(self, s):
         return np.array([ [0.0, -1.0, -1.0], [1.0, self.a, 0.0], [s[2], 0.0, s[0]-self.c] ])
 
+    def diff_form(self, s):
+        return self.rhs(s), self.Jakobian(s)
+
 class SAT(Problem):
-    def __init__(self, cnf_file_name) -> None:
-        with open(cnf_file_name) as cnf_file:
-            lines = cnf_file.readlines()
-            Problem.__init__(self, int(lines[0].split(' ')[2]))
+    def __init__(self, cnf_file_name, n = 15, r = 4.264, so_file_name = 'cSAT.so'):
+        #Initializing c functions
+        self.cSAT_functions = CDLL(so_file_name)
+        self.cSAT_functions.K_mi_m.restype = c_double
+        self.cSAT_functions.K_m.restype = c_double
+        self.cSAT_functions.gradV_i.restype = c_double
+        self.c_double_p = POINTER(c_double)
+        self.c_int_p = POINTER(c_int)
 
-            self.number_of_clauses = int(lines[0].split(' ')[3])
+        # cc -fPIC -shared -o cSAT.so cSAT.c
+
+        #Loading/generating problem
+        if cnf_file_name:
+            with open(cnf_file_name) as cnf_file:
+                lines = cnf_file.readlines()
+                super().__init__(int(lines[0].split(' ')[2]))
+                self.number_of_clauses = int(lines[0].split(' ')[3])
+                self.number_of_literals = []
+                #(v)^(v)#
+                clause_and = []
+                for i in range(self.number_of_clauses + 1):
+                    literal_number = 0
+                    if i > 0:
+                        clause_or = []
+                        for variable_str in lines[i].split(' '):
+                            variable = int(variable_str)
+                            if variable != 0:
+                                clause_or.append(variable)
+                                literal_number += 1
+                        clause_and.append(clause_or)
+                        self.number_of_literals.append(literal_number)
+                self.clauses = clause_and
+            
+        else:
+            literal_number = 3
+            super().__init__(n) #number_of_variables
+            self.clauses = []
             self.number_of_literals = []
+            self.number_of_clauses = int(n*r)+1
+            for i in range(self.number_of_clauses):
+                clause = [elem if randint(0,1) else -elem for elem in sample(range(1, n+1), literal_number)]
+                self.number_of_literals.append(literal_number)
+                self.clauses.append(clause)
 
-            #(v)^(v)#
-            clause_and = []
-            for i in range(self.number_of_clauses + 1):
-                literal_number = 0
-                if i > 0:
-                    clause_or = []
-                    for variable_str in lines[i].split(' '):
-                        variable = int(variable_str)
-                        if variable != 0:
-                            clause_or.append(variable)
-                            literal_number += 1
-                    clause_and.append(clause_or)
-                    self.number_of_literals.append(literal_number)
-
-            self.clauses = clause_and
-
-        self.c = np.array([[self.c_mj(m, j) for j in range(self.number_of_variables) ] for m in range(self.number_of_clauses)])
+        self.c = np.array([[1 if (j+1) in clause else -1 if -(j+1) in clause else 0 for j in range(self.number_of_variables) ] for clause in self.clauses])
 
     def verify(self, sol_file_name):
 
@@ -85,7 +111,7 @@ class SAT(Problem):
                     elif element < 0:
                         solution.append(False)
 
-            print(solution)
+            #print(solution)
             for i, row in enumerate(self.clauses):
                 if not check_row(row, solution):
                     incorrect_flag = True
@@ -96,14 +122,6 @@ class SAT(Problem):
         else:
             return True
 
-    def c_mj(self, m, j):
-        for variable in self.clauses[m]:
-            if variable == (j+1):
-                return 1
-            elif variable == -(j+1):
-                return -1
-        return 0
-
     def Jakobian_il(self,i,l,s,a):
         N_ = self.number_of_variables
         M_ = self.number_of_clauses
@@ -112,10 +130,10 @@ class SAT(Problem):
             prod = 1
             for j in range(N_): 
                 if j != i and j!=l:
-                    prod *= (1-self.c_mj(m, j)*s[j])
+                    prod *= (1-self.c[m,j]*s[j])
             prod *=prod
-            prod *= (1-self.c_mj(m, l)*s[l])*(3-self.c_mj(m, l))
-            summ += pow(2, 1-2*self.number_of_literals[m])*a[m]*self.c_mj(m, i)*self.c_mj(m, l)*prod
+            prod *= (1-self.c[m, l]*s[l])*(3-self.c[m, l])
+            summ += pow(2, 1-2*self.number_of_literals[m])*a[m]*self.c[m, i]*self.c[m, l]*prod
         return summ
 
     def Jakobian(self, s, a):
@@ -123,23 +141,125 @@ class SAT(Problem):
         return np.array([[self.Jakobian_il(i, l, s, a) for l in range(N_)] for i in range(N_)])
 
     def K_m(self, m, s):
-        return np.prod([( 1-self.c_mj(m,j) * s[j] ) for j in range(self.number_of_variables)])
+        data1 = self.c.flatten().astype(np.int32)
+        data1_p = data1.ctypes.data_as(self.c_int_p)
+
+        data2 = s.astype(np.double)
+        data2_p = data2.ctypes.data_as(self.c_double_p)
+        return self.cSAT_functions.K_m(m, data2_p, data1_p, self.number_of_variables)
 
     def K_mi_m(self, m, i, s):
-        K_mi = self.K_mi(m, i, s)
-        return K_mi*K_mi*(1-self.c_mj(m,i)*s[i])
+        data1 = self.c.flatten().astype(np.int32)
+        data1_p = data1.ctypes.data_as(self.c_int_p)
 
-    def K_mi(self, m, i, s):
-        return pow(2, -self.number_of_literals[m]) * np.prod([( 1-self.c_mj(m,j) * s[j] ) for j in range(self.number_of_variables) if i != j])
+        data2 = s.astype(np.double)
+        data2_p = data2.ctypes.data_as(self.c_double_p)
+        return self.cSAT_functions.K_mi_m(m, i, data2_p, data1_p, self.number_of_variables)
+
+    def gradV_i_old(self, i, s, a):
+        return sum([2*a[m]*self.c[m, i]*self.K_mi_m(m, i, s) for m in range(self.number_of_clauses) ])
 
     def gradV_i(self, i, s, a):
-        return sum([2*a[m]*self.c_mj(m, i)*self.K_mi_m(m, i, s) for m in range(self.number_of_clauses) ])
+        data1 = self.c.flatten().astype(np.int32) # c
+        data1_p = data1.ctypes.data_as(self.c_int_p)
+
+        data2 = s.astype(np.double) # s
+        data2_p = data2.ctypes.data_as(self.c_double_p)
+
+        data3 = a.astype(np.double) # a
+        data3_p = data3.ctypes.data_as(self.c_double_p)
+
+        return self.cSAT_functions.gradV_i(i, data2_p, data3_p, data1_p, self.number_of_variables, self.number_of_clauses)
 
     def rhs(self, s, a):
         return np.array([self.gradV_i(i, s, a) for i in range(self.number_of_variables)])
 
+    def diff_form(self, s):
+        return self.rhs(s), self.Jakobian(s)
+
+    def remove_variable(self, variable):
+        new_clauses = []
+        new_literals = []
+        for i, clause in enumerate(self.clauses):
+            new_clause = []
+            for elem in clause:
+                if elem > 0 and elem > variable:
+                    new_elem = elem - 1
+                    new_clause.append(new_elem)
+                elif elem < 0 and elem < -variable:
+                    new_elem = elem + 1
+                    new_clause.append(new_elem)
+                elif elem != variable and elem != -variable:
+                    new_clause.append(elem)
+            if len(new_clause) == self.number_of_literals[i]:
+                new_clauses.append(new_clause)
+                new_literals.append(self.number_of_literals[i])
+        
+        self.clauses = new_clauses
+        self.number_of_variables -= 1
+        self.number_of_clauses = len(new_clauses)
+
+    def smallest_variable(self):
+        used_in = [0*1 for i in range(self.number_of_variables)]
+        for clause in self.clauses:
+            for elem in clause:
+                used_in[abs(elem)-1] += 1
+        #print(used_in)
+        return used_in.index(min(used_in))+1
+
+    def write_problem_to_file(self, name):
+        file_name = name + "random3SATn"+str(self.number_of_variables)+"c"+str(self.number_of_clauses)+".cnf"
+        lines = []
+        lines.append('p cnf ' + str(self.number_of_variables)+" "+str(self.number_of_clauses) + '\n')
+        for clause in self.clauses:
+            myLine = ""
+            for elem in clause:
+                myLine += str(elem) + " "
+            lines.append(myLine + '0\n')
+
+        with open(file_name, 'w') as mFile:
+            mFile.writelines(lines)
+
+    def get_r(self):
+        return self.number_of_clauses/self.number_of_variables
+
+    def check_solution(self, solution):
+        def check_row(row, solution):
+            for elem in row:
+                if elem > 0:
+                    #or_var = or_var or solution[elem-1]
+                    if True == solution[elem-1]:
+                        return True
+                if elem < 0:
+                    if False == solution[-elem-1]:
+                        return True
+                    #or_var = or_var or not solution[-elem-1]
+                if elem == 0:
+                    raise ValueError
+        
+        incorrect_flag = False
+        for i, row in enumerate(self.clauses):
+            if not check_row(row, solution):
+                incorrect_flag = True
+                break
+
+        if incorrect_flag:
+            return False
+        else:
+            return True
+
+    def all_solutions(self):
+        all_sols = [bin(x)[2:].rjust(self.number_of_variables, '0') for x in range(2**self.number_of_variables)]
+        valid_sols = []
+        for str_sol in all_sols:
+            if self.check_solution([True if kar == '1' else False for kar in str_sol]):
+                valid_sols.append(str_sol)
+        return valid_sols
+
+
 class Lorenz(Problem):
     def __init__(self, sigma=10.0, rho=28.0, beta=2.66667):
+        """The "usual" parameters for the Lorenz system are the default values, for transient chaos set rho to be in the inteval [13.93,26.06]"""
         self.sigma = sigma
         self.rho = rho
         self.beta = beta
@@ -149,10 +269,20 @@ class Lorenz(Problem):
         return np.array([ self.sigma*( s[1]-s[0] ), s[0]*(self.rho-s[2])-s[1], s[1]*s[0]-self.beta*s[2] ])
     
     def Jakobian(self, s):
-        return np.array([ [-self.sigma, self.sigma, 0],[ self.rho-s[2], -1, s[0] ], [s[1], s[0], -self.beta] ])
+        #+s[0] miért csinálja azt amit csinál
+        return np.array([ [-self.sigma, self.sigma, 0],[ self.rho-s[2], -1, -s[0] ], [s[1], s[0], -self.beta] ])
+
+    def diff_form2(self, u):
+        x,y,z = u
+        f = [self.sigma * (y - x), self.rho * x - y - x * z, x * y - self.beta * z]
+        Df = [[-self.sigma, self.sigma, 0], [self.rho - z, -1, -x], [y, x, -self.beta]]
+        return np.array(f), np.array(Df)
+    
+    def diff_form(self, s):
+        return self.rhs(s), self.Jakobian(s)
+
 
 #Numerical integrators
-
 class Integrator:
     def __init__(self, Nmax = 10000, h = 0.0025) -> None:
         self.h = h
@@ -190,6 +320,18 @@ class ForwardEuler( Integrator ):
 
 #Numerical solvers
 
+def GramSchmidt(V):
+    """Gram-Schmidt orthogonalization algorithm for vectors in @param: V"""
+    space_shape = np.shape(V)
+    if (space_shape[0] != space_shape[1]):
+        raise ValueError
+        
+    U = np.zeros(space_shape)
+    U[0] = V[0]
+    for i in range(1, space_shape[0]):
+        U[i] = V[i] - sum([np.dot(U[j], V[i]) * U[j] / np.linalg.norm(U[j]) for j in range(i)])
+    return U
+
 class Solver:
     def __init__(self, problem, integrator) -> None:
         """Constructor of abstract solver class"""
@@ -204,11 +346,15 @@ class Solver:
         self.traj = []
         self.diff_vec = None
         self.times = []
+        self.Ms = []
+        self.Rs = []
 
     def save_states(self) -> None:
         """Saves the current state to member"""
         self.traj.append(self.s)
         self.times.append(self.time)
+        if hasattr(self, 'M'):
+            self.Ms.append(self.M)
 
     def step_function(self, adaptive_flag, tangental_flag, lower_diff_bound, upper_diff_bound, lower_h_bound, upper_h_bound) -> None:
         #Calculating next step
@@ -243,43 +389,66 @@ class Solver:
                 self.save_states()
             iter_step += 1
 
-    def plot_traj(self):
-        import matplotlib.pyplot as plt
-        plt.grid(True)
-        plt.title('Dynamical variables')
-        for i in range(self.problem.number_of_variables):
-            x = self.times
-            y = [self.traj[j][i] for j in range(len(self.traj))]
-            plt.plot(x, y, label=str(i+1))
-        plt.legend()
-        plt.show()
+    def solve2(self, time_limit= 200, number_of_points = 501, upper_h_bound = 0.05):
+        n = self.problem.number_of_variables
+        N = n**2
+        def LEC_system(u):
+            #x,y,z = u[:3]
+            U = u[n:n+N].reshape([n,n])
+            L = u[n+N:2*n+N]
+            f,Df = self.problem.diff_form(u[:n]) #the argument is the state 
+            A = U.T.dot(Df.dot(U))
+            dL = np.diag(A).copy()
+            for i in range(n):
+                A[i,i] = 0
+                for j in range(i+1,n): A[i,j] = -A[j,i]
+            dU = U.dot(A)
+            return np.concatenate([f,dU.flatten(),dL])
+        
+        u0 = np.ones(n)
+        U0 = np.identity(n)
+        L0 = np.zeros(n)
+        u0 = np.concatenate([u0, U0.flatten(), L0])
+        t = np.linspace(0,time_limit,number_of_points)
+        u = odeint(lambda u,t:LEC_system(u),u0,t, hmax=upper_h_bound)
+        
 
-    def get_Lyapunov_exponents(self):
-        if self.M is None:
-            return None
-        else:
-            self.M = np.array(self.M, dtype=np.float64)
-            MtM = np.dot(np.transpose(self.M),self.M)
-            eigvals = np.linalg.eigvalsh( MtM )
-            for elem in eigvals:
-                if 0.0 > elem:
-                    elem = 0.0
-            return np.log(eigvals)/(2*self.time)
-
-    def get_Lyapunov_convergence(self, max_time = 100, step_size = 0.25):
-        result = []
-        for i in range(int(max_time/step_size)):
-            #print("Batch complete")
-            time = step_size*i
-            self.solve(time, upper_h_bound=0.001, upper_diff_bound=0.001)
-            result.append( (self.get_Lyapunov_exponents(), time) )
-        return result
+        return t, u
+        
+    def solve3(self, u0, time_limit= 50, number_of_points = 501, upper_h_bound = 0.05):
+        n = self.problem.number_of_variables
+        N = n**2
+        def LEC_system(u):
+            #x,y,z = u[:3]
+            U = u[n:n+N].reshape([n,n])
+            L = u[n+N:2*n+N]
+            f,Df = self.problem.diff_form(u[:n]) #the argument is the state 
+            A = U.T.dot(Df.dot(U))
+            dL = np.diag(A).copy()
+            for i in range(n):
+                A[i,i] = 0
+                for j in range(i+1,n): A[i,j] = -A[j,i]
+            dU = U.dot(A)
+            return np.concatenate([f,dU.flatten(),dL])
+        
+        #u0 = np.ones(n)
+        U0 = np.identity(n)
+        L0 = np.zeros(n)
+        u0 = np.concatenate([u0, U0.flatten(), L0])
+        t = np.linspace(0,time_limit,number_of_points)
+        u = odeint(lambda u,t:LEC_system(u),u0,t, hmax=upper_h_bound)
+        
+        print(self.problem.rho)
+        return t, u
 
 class CTD( Solver ):
-    def __init__(self, problem, integrator) -> None:
+    def __init__(self, problem, integrator, initial_s = None) -> None:
         super().__init__(problem, integrator)
         #Dynamical variables
-        #self.s = np.random.rand( self.SATproblem.number_of_variables ) - np.array( [0.5 for i in range(self.SATproblem.number_of_variables)] )
+        if initial_s is None:
+            self.s = np.random.rand( self.problem.number_of_variables ) - np.array( [0.5 for i in range(self.problem.number_of_variables)] )
+        else:
+            self.s = initial_s
         self.a = np.array( [1 for i in range(self.problem.number_of_clauses)] )
         self.time = 0
 
@@ -290,7 +459,7 @@ class CTD( Solver ):
         self.aux.append(self.a)
         return super().save_states()
 
-    def step_function(self, adaptive_flag, tangental_flag, lower_diff_bound = 0.00005, upper_diff_bound = 0.01, lower_h_bound = 0.00005, upper_h_bound = 0.01) -> None:        
+    def step_function(self, adaptive_flag, tangental_flag=False, lower_diff_bound = 0.001, upper_diff_bound = 0.01, lower_h_bound = 0.0005, upper_h_bound = 0.01) -> None:        
         #Calculating next step
         new_s = self.integrator.step(self.s, lambda s_ : self.problem.rhs(s_, self.a))
         new_a = self.integrator.step(self.a, lambda a : np.array([a[m] * self.problem.K_m(m, self.s) for m in range(self.problem.number_of_clauses)]) )
@@ -298,7 +467,7 @@ class CTD( Solver ):
         #Evolving tangental map
         if tangental_flag:
             Jak = self.problem.Jakobian(self.s, self.a)
-            new_M = self.integrator.step(self.M, lambda M_ : np.matmul(Jak, M_) )
+            new_M = GramSchmidt( self.integrator.step(self.M, lambda M_ : np.matmul(Jak, M_)) )
             
         #Adaptive step size
         if adaptive_flag:
@@ -348,19 +517,142 @@ class CTD( Solver ):
         if incorrect_flag:
             return False
         else:
+            self.solution = test_solution
             return True
 
-    def solve(self, time_limit=2, adaptive_flag=True, tangental_flag=True, save_frequency=10) -> None:
+    def solve(self, time_limit=10.0, adaptive_flag=True, save_frequency=10) -> None:
         #setting up variables
         iter_step = 0
-        if not hasattr(self, 'M') and tangental_flag:
-            self.M = np.identity(len(self.s))
 
         while time_limit >= self.time:
-            self.step_function(adaptive_flag, tangental_flag)
+            self.step_function(adaptive_flag)
+            #print(self.time)
             if iter_step%save_frequency:
                 self.save_states()
                 if self.check_solution():
                     print("Solution found")
                     break
             iter_step += 1
+
+    def solve2(self, time_limit=5, number_of_points = 1000, upper_h_bound = 0.01) -> None:
+        n = self.problem.number_of_variables
+        N = n**2
+        def LEC_system(u):
+            #x,y,z = u[:3]
+            U = u[n:n+N].reshape([n,n])
+            L = u[n+N:2*n+N]
+            f,Df = self.problem.diff_form(u[:n]) #the argument is the state 
+            A = U.T.dot(Df.dot(U))
+            dL = np.diag(A).copy()
+            for i in range(n):
+                A[i,i] = 0
+                for j in range(i+1,n): A[i,j] = -A[j,i]
+            dU = U.dot(A)
+            return np.concatenate([f,dU.flatten(),dL])
+        
+        u0 = np.ones(n)
+        U0 = np.identity(n)
+        L0 = np.zeros(n)
+        u0 = np.concatenate([u0, U0.flatten(), L0])
+        t = np.linspace(0,time_limit,number_of_points)
+        u = odeint(lambda u,t:LEC_system(u),u0,t, hmax=upper_h_bound)
+        
+
+        return t, u
+
+    def plot_traj(self):
+        import matplotlib.pyplot as plt
+        plt.grid(True)
+        plt.title('Spin variables')
+        for i in range(self.problem.number_of_variables):
+            x = self.times
+            #x = [j for j in range(len(self.traj))]
+            y = [self.traj[j][i] for j in range(len(self.traj))]
+            plt.plot(x, y, label=str(i+1))
+        plt.legend()
+        plt.show()
+    
+    def plot_aux(self):
+        import matplotlib.pyplot as plt
+        plt.grid(True)
+        plt.title("Aux variables")
+        for i in range(self.aux[0].size):
+            #x = [j for j in range(len(self.aux))]
+            x = self.times
+            y = [self.aux[j][i] for j in range(len(self.aux))]
+            plt.plot(x, y, label=str(i+1))
+        #plt.legend()
+        plt.show()
+
+    def save_trajs(self, name):
+        import matplotlib.pyplot as plt
+        plt.grid(True)
+        plt.title('Spin variables')
+        for i in range(self.problem.number_of_variables):
+            x = self.times
+            y = [self.traj[j][i] for j in range(len(self.traj))]
+            plt.plot(x, y, label=str(i+1))
+        plt.legend()
+        plt.savefig(name+".png")
+        plt.clf()
+        plt.close('all')
+
+    def write_state_to_file(self, name):
+        filename = name + ".csv"
+        lines = []
+        line = ''
+        for elem in self.s:
+            line += str(elem) + ','
+        lines.append(line + '\n')
+        line = ''
+        for elem in self.a:
+            line += str(elem) + ','
+        lines.append(line + '\n')
+        with open(filename, 'w') as mFile:
+            mFile.writelines(lines)
+
+if __name__ == "__main__":
+    import random
+
+    myProblem = SAT('chaotic_SAT/random3SATn11c49.cnf')
+    #myProblem = SAT('chaotic_SAT/2random3SATn11c53.cnf')
+    mIntegrator = RK4()
+    
+    number_of_solutions = len(myProblem.all_solutions())
+    print('Number of solutions: {0}'.format(number_of_solutions))
+    #Generate initial conditions
+    initial_conditions = []
+    v = np.array([1 for i in range(myProblem.number_of_variables)])
+    b = np.array([random.random()/10 for i in range(myProblem.number_of_variables)])
+
+    for i in range(500):
+        t = (i-250)/300
+        initial_conditions.append(v*t+b)
+
+    dictionaries = []
+    for i, init_s in enumerate(initial_conditions):
+        result_dict = {}
+        result_dict['t'] = []
+        result_dict['init_s'] = []
+        result_dict['solution'] = []
+        print('Starting initial condition {0}'.format(i))
+        solver = CTD(myProblem, mIntegrator, init_s)
+        solver.solve()
+        result_dict['t'].append( solver.time )
+        result_dict['init_s'].append( init_s )
+        if solver.solution:
+            result_dict['solution'].append( solver.solution )
+        else:
+            result_dict['solution'].append( None )
+        dictionaries.append(result_dict)
+    
+    import csv
+    with open('output2.csv', 'w', newline='') as csvfile:
+        fieldnames = ['t', 'init_s', 'solution']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for elem in dictionaries:
+            writer.writerow(elem)
+  
+
