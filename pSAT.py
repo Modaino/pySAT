@@ -1,4 +1,5 @@
 #Boolean satisfiability problem solver with continuous dynamical system
+from cmath import sqrt
 from mimetypes import init
 import numpy as np
 from abc import abstractclassmethod
@@ -531,16 +532,26 @@ class CTD( Solver ):
             self.solution = test_solution
             return True
 
-    def solve(self, time_limit=10.0, adaptive_flag=True, save_frequency=10) -> None:
+    def solve(self, time_limit=10.0, adaptive_flag=True, save_frequency=10, exit_type = 'ortant') -> None:
         #setting up variables
         iter_step = 0
+        exit_condition = False
 
         while time_limit >= self.time:
             self.step_function(adaptive_flag)
             #print(self.time)
             if iter_step%save_frequency:
                 self.save_states()
-                if self.check_solution():
+                if exit_type == 'ortant':
+                    exit_condition = self.check_solution()
+                elif exit_type == 'long_trajectory':
+                    if self.check_solution():
+                        N = self.problem.number_of_variables
+                        sigma = 0.5
+                        R = sqrt(N-1+sigma**2)
+                        if np.linalg.norm(self.s) >= R:
+                            exit_condition = True
+                if exit_condition:
                     print("Solution found")
                     break
             iter_step += 1
