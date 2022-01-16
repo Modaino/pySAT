@@ -684,21 +684,19 @@ def line_time():
             writer.writerow(elem)
 
 def color_area(init_s):
-    myProblem = SAT('chaotic_SAT/random3SATn11c49.cnf')
-    mIntegrator = RK4()
     solver = CTD(myProblem, mIntegrator, init_s)
-    solver.solve()
+    solver.solve(exit_type='long_trajectory')
     return solver.solution
 
 def test_fun(init_s):
     return np.linalg.norm(init_s)
 
+myProblem = SAT('chaotic_SAT/random3SATn11c49.cnf')
+mIntegrator = RK4()
+
 if __name__ == "__main__":
     from multiprocessing import Pool
     from copy import deepcopy
-
-    myProblem = SAT('chaotic_SAT/random3SATn11c49.cnf')
-    myProblem = SAT('chaotic_SAT/2random3SATn11c53.cnf')
 
     s_init_0 = [random() for i in range(myProblem.number_of_variables)]
     initial_conditions = []
@@ -711,7 +709,7 @@ if __name__ == "__main__":
 
     output = [None for elem in initial_conditions]
 
-    pool = Pool(processes=16)
+    pool = Pool(processes=6)
     chunksize = int(len(initial_conditions) / pool._processes)
     for ind, res in enumerate(pool.imap_unordered(color_area, initial_conditions, chunksize)):
         output[ind] = myProblem.get_solution_index(res)
