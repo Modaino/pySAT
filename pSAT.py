@@ -265,14 +265,17 @@ class SAT(Problem):
         else:
             return self.valid_solutions
 
-    def get_solution_index(self, solution):
+    def str_sol_from_list(self, sol_list):
         solution_str = ""
-        for elem in solution:
+        for elem in sol_list:
             if elem:
                 solution_str+='1'
             else:
                 solution_str+='0'
-        return self.all_solutions().index(solution_str)
+        return solution_str 
+
+    def get_solution_index(self, solution):
+        return self.all_solutions().index(self.str_sol_from_list(solution))
 
 class Lorenz(Problem):
     def __init__(self, sigma=10.0, rho=28.0, beta=2.66667):
@@ -558,7 +561,7 @@ class CTD( Solver ):
                         if np.linalg.norm(self.s) >= R:
                             exit_condition = True
                 if exit_condition:
-                    print("Solution found")
+                    print("Solution found: " + self.str_sol_from_list(self.solution))
                     break
             iter_step += 1
 
@@ -692,6 +695,7 @@ def test_fun(init_s):
     return np.linalg.norm(init_s)
 
 myProblem = SAT('chaotic_SAT/random3SATn11c49.cnf')
+myProblem = SAT('easy.cnf')
 mIntegrator = RK4()
 
 if __name__ == "__main__":
