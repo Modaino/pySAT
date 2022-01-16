@@ -266,7 +266,13 @@ class SAT(Problem):
             return self.valid_solutions
 
     def get_solution_index(self, solution):
-        return self.all_solutions().index(solution)
+        solution_str = ""
+        for elem in solution:
+            if elem:
+                solution_str+='1'
+            else:
+                solution_str+='0'
+        return self.all_solutions().index(solution_str)
 
 class Lorenz(Problem):
     def __init__(self, sigma=10.0, rho=28.0, beta=2.66667):
@@ -692,6 +698,8 @@ if __name__ == "__main__":
     from copy import deepcopy
 
     myProblem = SAT('chaotic_SAT/random3SATn11c49.cnf')
+    myProblem = SAT('chaotic_SAT/2random3SATn11c53.cnf')
+    print(myProblem.all_solutions())
 
     s_init_0 = [random() for i in range(myProblem.number_of_variables)]
     initial_conditions = []
@@ -704,14 +712,15 @@ if __name__ == "__main__":
 
     output = [None for elem in initial_conditions]
 
-    pool = Pool()
-    chunksize = int(len(initial_conditions) / pool._processes)
-    for ind, res in enumerate(pool.imap_unordered(color_area, initial_conditions, chunksize)):
-        output[ind] = myProblem.get_solution_index(res)
+    # pool = Pool()
+    # chunksize = int(len(initial_conditions) / pool._processes)
+    # for ind, res in enumerate(pool.imap_unordered(color_area, initial_conditions, chunksize)):
+    #     output[ind] = myProblem.get_solution_index(res)
+    #     print("Done with {0}".format(ind))
 
   
-    with open('basin_map.out', 'w') as outputfile:
-        for i in range(11):
-            for j in range(11):
-                outputfile.write(str(output[i*11 + j]) + ',')
-            outputfile.write('\n')
+    # with open('basin_map.out', 'w') as outputfile:
+    #     for i in range(11):
+    #         for j in range(11):
+    #             outputfile.write(str(output[i*11 + j]) + ',')
+    #         outputfile.write('\n')
