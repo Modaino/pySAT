@@ -1,7 +1,8 @@
 #Boolean satisfiability problem solver with continuous dynamical system
+from mimetypes import init
 import numpy as np
 from abc import abstractclassmethod
-from random import sample, randint
+from random import sample, randint, random
 from scipy.integrate import odeint
 from ctypes import CDLL, POINTER, c_double, c_int
 #from numpy.core.defchararray import array
@@ -48,6 +49,9 @@ class SAT(Problem):
         self.c_int_p = POINTER(c_int)
 
         # cc -fPIC -shared -o cSAT.so cSAT.c
+
+        #Misc. init
+        self.valid_solutions = None
 
         #Loading/generating problem
         if cnf_file_name:
@@ -249,13 +253,19 @@ class SAT(Problem):
             return True
 
     def all_solutions(self):
-        all_sols = [bin(x)[2:].rjust(self.number_of_variables, '0') for x in range(2**self.number_of_variables)]
-        valid_sols = []
-        for str_sol in all_sols:
-            if self.check_solution([True if kar == '1' else False for kar in str_sol]):
-                valid_sols.append(str_sol)
-        return valid_sols
+        if self.valid_solutions is None:
+            all_sols = [bin(x)[2:].rjust(self.number_of_variables, '0') for x in range(2**self.number_of_variables)]
+            valid_sols = []
+            for str_sol in all_sols:
+                if self.check_solution([True if kar == '1' else False for kar in str_sol]):
+                    valid_sols.append(str_sol)
+            self.valid_solutions = valid_sols
+            return valid_sols
+        else:
+            return self.valid_solutions
 
+    def get_solution_index(self, solution):
+        return self.all_solutions().index(solution)
 
 class Lorenz(Problem):
     def __init__(self, sigma=10.0, rho=28.0, beta=2.66667):
@@ -454,6 +464,7 @@ class CTD( Solver ):
 
         #Records
         self.aux = []
+        self.solution = None
 
     def save_states(self) -> None:
         self.aux.append(self.a)
@@ -611,7 +622,7 @@ class CTD( Solver ):
         with open(filename, 'w') as mFile:
             mFile.writelines(lines)
 
-if __name__ == "__main__":
+def line_time():
     import random
 
     myProblem = SAT('chaotic_SAT/random3SATn11c49.cnf')
@@ -654,5 +665,42 @@ if __name__ == "__main__":
         writer.writeheader()
         for elem in dictionaries:
             writer.writerow(elem)
-  
 
+def color_area(init_s):
+    myProblem = SAT('chaotic_SAT/random3SATn11c49.cnf')
+    mIntegrator = RK4()
+    solver = CTD(myProblem, mIntegrator, init_s)
+    solver.solve()
+    return solver.solution
+
+def test_fun(init_s):
+    return np.linalg.norm(init_s)
+
+if __name__ == "__main__":
+    from multiprocessing import Pool
+    from copy import deepcopy
+
+    myProblem = SAT('chaotic_SAT/random3SATn11c49.cnf')
+
+    s_init_0 = [random() for i in range(myProblem.number_of_variables)]
+    initial_conditions = []
+    for i in range(11):
+        for j in range(11):
+            an_initial_condition = deepcopy(s_init_0)
+            an_initial_condition[0] = i/5.01 - 0.999
+            an_initial_condition[1] = j/5.01 - 0.999
+            initial_conditions.append(np.array(an_initial_condition))
+
+    output = [None for elem in initial_conditions]
+
+    pool = Pool()
+    chunksize = int(len(initial_conditions) / pool._processes)
+    for ind, res in enumerate(pool.imap_unordered(color_area, initial_conditions, chunksize)):
+        output[ind] = myProblem.get_solution_index(res)
+
+  
+    with open('basin_map.out', 'w') as outputfile:
+        for i in range(11):
+            for j in range(11):
+                outputfile.write(str(output[i*11 + j]) + ',')
+            outputfile.write('\n')
