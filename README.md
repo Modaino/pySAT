@@ -1,1 +1,1 @@
-# pSAT
+# pySAT
