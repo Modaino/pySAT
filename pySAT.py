@@ -5,11 +5,12 @@
 #                                       #
 # Written by Áron Vízkeleti             #
 #       on 2021-10-10                   #
-#       last modified 2022-02-06        #
+#       last modified 2022-04-04        #
 #                                       #
 #########################################
 
-from math import sqrt
+from cmath import nan
+from math import sqrt, pi, sin
 from xmlrpc.client import Boolean
 import numpy as np
 from abc import abstractclassmethod
@@ -20,9 +21,13 @@ from ctypes import CDLL, POINTER, c_double, c_int
 #Constants
 
 ORTANT = 0
-CONVERGENCE_RADIUS = 3
+CONVERGENCE_RADIUS = -1
+NEGATIVE_AUX = -2
 RHS_TYPE_ONE = 1
 RHS_TYPE_TWO = 2
+RHS_TYPE_THREE = 3
+RHS_TYPE_FOUR = 4
+RHS_TYPE_FIVE = 5
 
 #Numerical integrator(s)
 
@@ -125,6 +130,8 @@ class SAT(Problem):
         #Misc. init
         self.valid_solutions = None
         self.rhs_type = rhs_type
+        self.alpha = None
+        
 
         #Loading/generating problem
         if cnf_file_name:
@@ -161,6 +168,7 @@ class SAT(Problem):
 
         #Generating the clause matrix
         self.c = np.array([[1 if (j+1) in clause else -1 if -(j+1) in clause else 0 for j in range(self.number_of_variables) ] for clause in self.clauses])
+        self.alpha = self.get_alpha()
 
         #Loading c_functions
         if not so_file_name:
@@ -169,6 +177,9 @@ class SAT(Problem):
             self.cSAT_functions = CDLL(so_file_name)
             self.cSAT_functions.rhs1.restype = None
             self.cSAT_functions.rhs2.restype = None
+            self.cSAT_functions.rhs3.restype = None
+            self.cSAT_functions.rhs4.restype = None
+            self.cSAT_functions.rhs5.restype = None
             self.cSAT_functions.jacobian1.restype = None
             self.cSAT_functions.jacobian2.restype = None
 
@@ -204,8 +215,8 @@ class SAT(Problem):
 
     def rhs(self, t, y):
         """Right-hand side of the differential equation defining the system"""
+        N_ = self.number_of_variables
         if not self.cSAT_functions: #This condition should be moved outside of solver
-            N_ = self.number_of_variables
             s = y[:N_]
             a = y[N_:]
             if self.rhs_type == RHS_TYPE_ONE:
@@ -215,6 +226,27 @@ class SAT(Problem):
             elif self.rhs_type == RHS_TYPE_TWO:
                 ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
                 da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
+                return np.concatenate((ds, da), axis=None)
+            elif self.rhs_type == RHS_TYPE_THREE:
+                b = 0.0725
+                a_ = sum(a)/self.number_of_clauses
+                constant = 0.5*pi*b*self.alpha * a_
+                ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
+                da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
+                return np.concatenate((ds, da), axis=None)
+            elif self.rhs_type == RHS_TYPE_FOUR or self.rhs_type == RHS_TYPE_FIVE:
+                b = 0.0725
+                a_ = sum(a)/len(a)
+                constant = 0.5*pi*b*self.alpha * a_
+                ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
+                da = np.array([a[m]*(self.K(m, s)) for m in range(self.number_of_clauses)])
+                return np.concatenate((ds, da), axis=None)
+            elif self.rhs_type == RHS_TYPE_FIVE:
+                b = 0.0725
+                a_ = sum(a)/len(a)
+                constant = 0.5*pi*b*self.alpha * a_
+                ds = (-1)*np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
+                da = (-1)*np.array([a[m]*(self.K(m, s)) for m in range(self.number_of_clauses)])
                 return np.concatenate((ds, da), axis=None)
         else:
             clause_matrix = self.c.flatten().astype(np.int32) # c
@@ -231,6 +263,12 @@ class SAT(Problem):
                 self.cSAT_functions.rhs1(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_TWO:
                 self.cSAT_functions.rhs2(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+            elif self.rhs_type == RHS_TYPE_THREE:
+                self.cSAT_functions.rhs3(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+            elif self.rhs_type == RHS_TYPE_FOUR:
+                self.cSAT_functions.rhs4(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+            elif self.rhs_type == RHS_TYPE_FIVE:
+                self.cSAT_functions.rhs5(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
             return result
     
     def K(self, m, s):
@@ -266,6 +304,7 @@ class SAT(Problem):
         self.clauses = new_clauses
         self.number_of_variables -= 1
         self.number_of_clauses = len(new_clauses)
+        self.number_of_literals = new_literals
 
     def smallest_variable(self):
         """Returns the index of the varibale that appears in the smallest number of clauses"""
@@ -278,7 +317,7 @@ class SAT(Problem):
 
     def write_problem_to_file(self, name):
         """Generates cnf file of the problem"""
-        file_name = name + "randomSAT_n"+str(self.number_of_variables)+"_c"+str(self.number_of_clauses)+".cnf"
+        file_name = name + ".cnf"
         lines = []
         lines.append('p cnf ' + str(self.number_of_variables)+" "+str(self.number_of_clauses) + '\n')
         for clause in self.clauses:
@@ -291,7 +330,9 @@ class SAT(Problem):
             mFile.writelines(lines)
 
     def get_alpha(self):
-        return self.number_of_clauses/self.number_of_variables
+        if not self.alpha:
+            self.alpha = self.number_of_clauses/self.number_of_variables
+        return self.alpha
 
     def check_solution(self, solution) -> Boolean:
         """
@@ -340,7 +381,8 @@ class SAT(Problem):
             return self.valid_solutions
 
     def get_solution_index(self, solution):
-        return self.all_solutions().index( "".join(['1' if elem else '0' for elem in solution]) )
+        """Returns the index of a solution given in a binary string (zeroes and ones as a string)"""
+        return self.all_solutions().index( solution )
 
     def Hamming_distance(self, sol1, sol2):
         if len(sol1) != len(sol2):
@@ -389,30 +431,38 @@ class CTD:
 
         #Dynamical variables
         if initial_s is None:
-                self.state[0:problem.number_of_variables] = np.array([2*random() -1 for i in range(problem.number_of_variables)])
+            self.state[0:problem.number_of_variables] = np.array([2*random() -1 for i in range(problem.number_of_variables)])
         else:
-                self.state[0:problem.number_of_variables] = initial_s
+            self.state[0:problem.number_of_variables] = initial_s
         if random_aux == True:
             self.state[problem.number_of_variables:] = np.array( [random()*15 for i in range(self.problem.number_of_clauses)] )
         else:
-            self.state[problem.number_of_variables:] = np.array( [1 for i in range(self.problem.number_of_clauses)] )
+            self.state[problem.number_of_variables:] = np.ones(self.problem.number_of_clauses)
         self.time = 0
 
         #Records
         self.aux = []
         self.solutions = []
+        self.solution_time = None
 
-    def fast_solve(self, t_max, exit_type = 0, solver_type = 'BDF', atol=0.000001, rtol=0.000001) -> None :
+    def fast_solve(self, t_max, exit_type = ORTANT, solver_type = 'BDF', atol=0.000001, rtol=0.001) -> None :
+        """
+        Solver function, using predefined integrator (default is scipy)
+        @param t_max: maximum analog time
+        @param exit_type: defines the exit condition (ORTANT = 0) (CONVERGENCE_RADIUS = -1)
+        @param solver_type: predefined solver parameter (in scipy or otherwise)
+        @param atol, rtol: absolute and relative tolerances
+        """
         def exit_ortant(t, y) -> float:
             boolean_sol = [True if elem > 0 else False for elem in y[0:self.problem.number_of_variables]]
             if self.problem.check_solution(boolean_sol):
-                sol_index = self.problem.get_solution_index( boolean_sol )
-                if len(self.solutions) == 0 or self.solutions[-1] != sol_index:
-                    self.solutions.append(sol_index)
-                return 0
-            else:
-                return -1.0
+                #self.solutions.append(boolean_sol)
+                #if self.solution_time is None:
+                #    self.solution_time = t
+                return 0.0
+            return -1.0
         exit_ortant.terminal = True
+        
         def exit_long(t, y):
             N = self.problem.number_of_variables
             s = y[0:N]
@@ -424,8 +474,15 @@ class CTD:
                 if sabs >= R:
                     return 0
             return -1.0
+        exit_long.terminal = True
 
-        
+        def exit_negative_aux(t, y) ->float:
+            if any([elem < 1 for elem in y[self.problem.number_of_variables:]]):
+                return 0.0
+            else:
+                return -1.0
+        exit_negative_aux.terminal = True
+
         if exit_type == ORTANT:
             self.sol = solve_ivp(fun=self.problem.rhs,
                             t_span=(0, t_max),
@@ -436,7 +493,7 @@ class CTD:
                             events=exit_ortant,
                             atol=atol,
                             rtol=rtol)
-        if exit_type == CONVERGENCE_RADIUS:
+        elif exit_type == CONVERGENCE_RADIUS:
             self.sol = solve_ivp(fun=self.problem.rhs,
                             t_span=(0, t_max),
                             y0=self.state,
@@ -446,12 +503,45 @@ class CTD:
                             events=exit_long,
                             atol=atol,
                             rtol=rtol)
+        elif exit_type == NEGATIVE_AUX:
+            self.sol = solve_ivp(fun=self.problem.rhs,
+                            t_span=(0, t_max),
+                            y0=self.state,
+                            method=solver_type,
+                            t_eval=None,
+                            dense_output=False,
+                            events=exit_negative_aux,
+                            atol=atol,
+                            rtol=rtol)                    
+        else:
+            self.sol = solve_ivp(fun=self.problem.rhs,
+                            t_span=(0, t_max),
+                            y0=self.state,
+                            method=solver_type,
+                            t_eval=None,
+                            dense_output=False,
+                            atol=atol,
+                            rtol=rtol)
+        
+    def get_solution(self):
+        if self.sol.y.any():
+            str_sol = ""
+            for elem in [spin_var_series[-1] for spin_var_series in self.sol.y[0:self.problem.number_of_variables]]:
+                if elem > 0:
+                    str_sol += '1'
+                else:
+                    str_sol += '0'
+            
+            return str_sol
+        else:
+            return None
 
     def lyapunov_solve(self, t_max, exit_type = 0, solver_type = 'BDF', atol=0.000001, rtol=0.000001) -> None :
         N = self.problem.number_of_variables
         M = self.problem.number_of_clauses
 
         def exit_ortant(t, y) -> float:
+            """CHANGE IT"""
             boolean_sol = [True if elem > 0 else False for elem in y[0:self.problem.number_of_variables]]
             if self.problem.check_solution(boolean_sol):
                 sol_index = self.problem.get_solution_index( "".join(['1' if elem else '0' for elem in boolean_sol]) )
