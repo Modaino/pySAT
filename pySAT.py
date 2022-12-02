@@ -5,7 +5,7 @@
 #                                       #
 # Written by Áron Vízkeleti             #
 #       on 2021-10-10                   #
-#       last modified 2022-04-04        #
+#       last modified 2022-04-06        #
 #                                       #
 #########################################
 
@@ -14,7 +14,7 @@ from math import sqrt, pi, sin
 from xmlrpc.client import Boolean
 import numpy as np
 from abc import abstractclassmethod
-from random import sample, randint, random
+from random import sample, randint, random, getrandbits
 from scipy.integrate import solve_ivp
 from ctypes import CDLL, POINTER, c_double, c_int
 
@@ -23,11 +23,14 @@ from ctypes import CDLL, POINTER, c_double, c_int
 ORTANT = 0
 CONVERGENCE_RADIUS = -1
 NEGATIVE_AUX = -2
+HYPER_SPHERE = -3
 RHS_TYPE_ONE = 1
 RHS_TYPE_TWO = 2
 RHS_TYPE_THREE = 3
 RHS_TYPE_FOUR = 4
 RHS_TYPE_FIVE = 5
+RHS_TYPE_RECPREV = 6
+RHS_TYPE_POINTCHARGES = 7
 
 #Numerical integrator(s)
 
@@ -117,7 +120,7 @@ class Lorenz(Problem):
 
 class SAT(Problem):
     """Class representation of the continuous dynamical system version of a boolean satisfiability ptoblem"""
-    def __init__(self, cnf_file_name, so_file_name, n = 15, alpha = 4.264, literal_number = 3, rhs_type = RHS_TYPE_ONE):
+    def __init__(self, cnf_file_name, so_file_name, n = 15, alpha = 4.264, literal_number = 3, rhs_type = RHS_TYPE_ONE, planted = 3):
         """
         Constructor
         @param cnf_file_name: cnf-file defining the problem, if set to None, generates a random problem
@@ -131,7 +134,10 @@ class SAT(Problem):
         self.valid_solutions = None
         self.rhs_type = rhs_type
         self.alpha = None
-        
+        if self.rhs_type == RHS_TYPE_RECPREV or self.rhs_type == RHS_TYPE_POINTCHARGES:
+            self.tried_ortants = []
+            self.tried_ortant_idx = 0
+            self.rec_prev_factor = 1.0
 
         #Loading/generating problem
         if cnf_file_name:
@@ -161,10 +167,13 @@ class SAT(Problem):
             self.clauses = []
             self.number_of_literals = []
             self.number_of_clauses = int(n*alpha)+1
-            for i in range(self.number_of_clauses):
-                clause = [elem if randint(0,1) else -elem for elem in sample(range(1, n+1), literal_number)]
-                self.number_of_literals.append(literal_number)
-                self.clauses.append(clause)
+            if planted:
+                self.clauses = self.generate_planted_problem(n, self.number_of_clauses, planted, literal_number)
+            else:
+                for i in range(self.number_of_clauses):
+                    clause = [elem if randint(0,1) else -elem for elem in sample(range(1, n+1), literal_number)]
+                    self.number_of_literals.append(literal_number)
+                    self.clauses.append(clause)
 
         #Generating the clause matrix
         self.c = np.array([[1 if (j+1) in clause else -1 if -(j+1) in clause else 0 for j in range(self.number_of_variables) ] for clause in self.clauses])
@@ -248,6 +257,28 @@ class SAT(Problem):
                 ds = (-1)*np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
                 da = (-1)*np.array([a[m]*(self.K(m, s)) for m in range(self.number_of_clauses)])
                 return np.concatenate((ds, da), axis=None)
+            elif self.rhs_type == RHS_TYPE_RECPREV:
+                if len(self.tried_ortants) > 2:
+                    L = np.array(sum([s - sl for sl in self.tried_ortants]))
+                    L = (self.rec_prev_factor / (np.linalg.norm(L)**3)) * L
+                else:
+                    L = np.zeros(self.number_of_variables)
+                b = 0.0725
+                a_ = sum(a)/self.number_of_clauses
+                constant = 0.5*pi*b*self.alpha * a_
+                ds = L + np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
+                da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
+                return np.concatenate((ds, da), axis=None)
+            elif self.rhs_type == RHS_TYPE_POINTCHARGES:
+                if len(self.tried_ortants) >= 1:
+                    L = np.array(sum([s - sl for sl in self.tried_ortants]))
+                    L = (self.rec_prev_factor / (np.linalg.norm(L)**3)) * L
+                else:
+                    L = np.zeros(self.number_of_variables)
+                ds = L
+                da = np.zeros(self.number_of_clauses)
+                da[0] = len(self.tried_ortants) - a[0]
+                return np.concatenate((ds, da), axis=None)
         else:
             clause_matrix = self.c.flatten().astype(np.int32) # c
             clause_matrix_pointer = clause_matrix.ctypes.data_as(POINTER(c_int))
@@ -279,7 +310,7 @@ class SAT(Problem):
         """Modified clause term, as defined in nature physics letter doi:10.1038/NPHY2105"""
         return pow(2, -self.number_of_literals[m])*np.prod([( 1-self.c[m,j] * s[j] ) for j in range(self.number_of_variables) if i != j])
 
-    def remove_variable(self, variable):
+    def remove_variable(self, variable) -> None:
         """
         Removes a variable and all the clauses the variable appeared in.
         @param variable: index of the variable to be removed
@@ -300,11 +331,14 @@ class SAT(Problem):
             if len(new_clause) == self.number_of_literals[i]:
                 new_clauses.append(new_clause)
                 new_literals.append(self.number_of_literals[i])
-        
+
+        #Resetting variables
         self.clauses = new_clauses
         self.number_of_variables -= 1
         self.number_of_clauses = len(new_clauses)
         self.number_of_literals = new_literals
+        self.c = np.array([[1 if (j+1) in clause else -1 if -(j+1) in clause else 0 for j in range(self.number_of_variables) ] for clause in self.clauses])
+        self.alpha = self.number_of_clauses/self.number_of_variables
 
     def smallest_variable(self):
         """Returns the index of the varibale that appears in the smallest number of clauses"""
@@ -315,7 +349,72 @@ class SAT(Problem):
         #print(used_in)
         return used_in.index(min(used_in))+1
 
-    def write_problem_to_file(self, name):
+    def generate_planted_problem(self, N, M, S, literal_number):
+        def compatible(clause, solutions):
+            if clause is None:
+                return False
+            for sol in solutions:
+                is_compatible = False
+                for elem in clause:
+                    if elem > 0:
+                        if sol[elem-1]:
+                            is_compatible = True
+                    if elem < 0:
+                        if not sol[(-elem)-1]:
+                            is_compatible = True
+                # If the clause is not compatible with this solution
+                if not is_compatible:
+                    return False
+            # If it was compatible with all the solutions
+            return True
+        
+        # Get the sols matrix as an input (not as random)
+        sols = np.zeros((S, N))
+        for i in range(S):
+            for j in range(N):
+                if getrandbits(1):
+                    sols[i,j] = 1
+
+        clauses = []
+        for m in range(M):
+            test_clause = None
+            while not compatible(test_clause, sols):
+                test_clause = [elem if randint(0,1) else -elem for elem in sample(range(1, N+1), literal_number)]
+            clauses.append(test_clause)
+        
+        self.planted_solutions = ["".join([str(int(elem)) for elem in sol]) for sol in sols]
+        return clauses
+
+    def downconvert_4_3(self):
+        new_clauses = []
+        N = self.number_of_variables
+        
+        for (idx, clause) in enumerate(self.clauses):
+            new_clause_1 = [clause[0], clause[1], N+1+idx]
+            new_clause_2 = [clause[2], clause[3], -(N+1+idx)]
+            new_clauses.append(new_clause_1)
+            new_clauses.append(new_clause_2)
+            
+        self.number_of_variables += self.number_of_clauses
+        self.number_of_clauses += self.number_of_clauses
+        self.clauses = new_clauses
+        self.valid_solutions = None
+
+    def down_convert_clause(self, clause_idx):
+        old_clause = self.clauses[clause_idx]
+        k = len(old_clause)
+        N = self.number_of_variables
+
+        if k <= 3:
+            raise ValueError("Cannot decrese clause length below 3")
+
+        # k-3 new variables
+        new_clauses = []
+        new_clauses.append([old_clause[0], old_clause[1], N+1])
+        for j in range(1, k-3):
+            new_clauses.append([-(N+j)])
+
+    def write_problem_to_file(self, name) -> None:
         """Generates cnf file of the problem"""
         file_name = name + ".cnf"
         lines = []
@@ -362,6 +461,8 @@ class SAT(Problem):
                 break
 
         if incorrect_flag:
+            if self.rhs_type == RHS_TYPE_RECPREV or self.rhs_type == RHS_TYPE_POINTCHARGES:
+                self.set_add(solution)
             return False #Solution does not solve the sat problem
         else:
             #self.solution = "".join(['1' if elem else '0' for elem in test_solution])
@@ -422,6 +523,50 @@ class SAT(Problem):
         
         return clusters
 
+    def set_add(self, solution):
+        solution_vec = np.array([1 if spin is True else -1 for spin in solution])
+        if len(self.tried_ortants) == 0:
+            self.tried_ortants.append( solution_vec )
+        else:
+            for elem in self.tried_ortants:
+                if (elem == solution_vec).all():
+                    return None
+            if len(self.tried_ortants) < 100:
+                self.tried_ortants.append( solution_vec )
+            else:
+                self.tried_ortants[self.tried_ortant_idx] = solution_vec
+                if self.tried_ortant_idx < 100:
+                    self.tried_ortant_idx += 1
+                else:
+                    self.tried_ortant_idx = 0
+            return None
+            
+    def harden_clause(self, clause_idx, solutions):
+        """Only one literal needs to be true per clause, this function flips the first of the excess true literals in a clause if there is one"""
+        literal_satisfaction = [False for k in range(self.number_of_literals[clause_idx])]
+
+        for k in range(self.number_of_literals[clause_idx]):
+            # Is the literal true for all the given solutions?
+            variable_idx = abs(self.clauses[clause_idx][k])
+            literal_value = '1' if self.clauses[clause_idx][k] > 0 else '0'
+
+            literal_satisfaction[k] = all(sol[variable_idx-1] == literal_value for sol in solutions)
+        
+        # Flipping the first excess literal
+        if literal_satisfaction.count(True) >= 2:
+            for k in range(self.number_of_literals[clause_idx]):
+                if literal_satisfaction[k]:
+                    self.clauses[clause_idx][k] = -self.clauses[clause_idx][k]
+                    # for sol in solutions:
+                    #     if not self.check_solution(sol):
+                    #         self.clauses[clause_idx][k] = -self.clauses[clause_idx][k]
+                    #         return False
+                    return True
+        else:
+            return False
+            
+
+
 #Numerical solver definition(s)
 
 class CTD:
@@ -444,8 +589,9 @@ class CTD:
         self.aux = []
         self.solutions = []
         self.solution_time = None
+        self.inside_hypersphere = None
 
-    def fast_solve(self, t_max, exit_type = ORTANT, solver_type = 'BDF', atol=0.000001, rtol=0.001) -> None :
+    def fast_solve(self, t_max, exit_type = ORTANT, solver_type = 'BDF', atol=0.000001, rtol=0.001, hypersphere_radius = 1.0) -> None :
         """
         Solver function, using predefined integrator (default is scipy)
         @param t_max: maximum analog time
@@ -483,6 +629,23 @@ class CTD:
                 return -1.0
         exit_negative_aux.terminal = True
 
+        def exit_hypersphere(t ,y) -> float:
+            s = y[:self.problem.number_of_variables]
+            if np.linalg.norm(s, 2) >= hypersphere_radius:
+                return 1.0
+            else:
+                return -1.0
+        exit_hypersphere.terminal = False
+
+        def enter_hypersphere(t ,y) -> float:
+            s = y[:self.problem.number_of_variables]
+            if np.linalg.norm(s, 2) < hypersphere_radius:
+                return 1.0
+            else:
+                return -1.0
+        exit_hypersphere.terminal = False
+
+
         if exit_type == ORTANT:
             self.sol = solve_ivp(fun=self.problem.rhs,
                             t_span=(0, t_max),
@@ -512,6 +675,20 @@ class CTD:
                             dense_output=False,
                             events=exit_negative_aux,
                             atol=atol,
+                            rtol=rtol)              
+        elif exit_type == HYPER_SPHERE:
+            if np.linalg.norm(self.state[:self.problem.number_of_variables],2) < hypersphere_radius:
+                self.inside_hypersphere = True
+            else:
+                self.inside_hypersphere = False
+            self.sol = solve_ivp(fun=self.problem.rhs,
+                            t_span=(0, t_max),
+                            y0=self.state,
+                            method=solver_type,
+                            t_eval=None,
+                            dense_output=False,
+                            events=exit_hypersphere,
+                            atol=atol,
                             rtol=rtol)                    
         else:
             self.sol = solve_ivp(fun=self.problem.rhs,
@@ -535,6 +712,17 @@ class CTD:
             return str_sol
         else:
             return None
+
+    def get_satisfied_C_of_t(self):
+        if not self.sol:
+            print("Solution object not yet generated")
+            return None
+        else:
+            C_of_t = []
+            for elem in self.sol.y:
+                solution_vec = np.array([1 if spin is True else -1 for spin in elem[:self.problem.number_of_variables]])
+                print(solution_vec)
+            return (self.sol.t, C_of_t)
 
     def lyapunov_solve(self, t_max, exit_type = 0, solver_type = 'BDF', atol=0.000001, rtol=0.000001) -> None :
         N = self.problem.number_of_variables
@@ -607,3 +795,81 @@ class CTD:
                             atol=atol,
                             rtol=rtol)
 
+    def get_ortant_path(self):
+        pass
+        # if self.sol is None:
+        #     print("There is no solution attempt")
+        #     return None
+        # else:
+
+
+class Warning_propagator:
+    def __init__(self, SAT_problem) -> None:
+        import networkx as nx
+
+        self.problem = SAT_problem
+        self.M = SAT_problem.number_of_clauses
+        self.N = SAT_problem.number_of_variables
+        self.g = nx.Graph()
+        self.g.add_nodes_from([(i, {'type' : 'variable'}) for i in range(self.N)], bipartite=0) # variable nodes
+        self.g.add_nodes_from([i+self.N for i in range(self.M)], bipartite=1)                   # clause nodes
+        for m, clause in enumerate(SAT_problem.clauses):
+            for literal in clause:
+                wrng = Warning()
+                wrng.random_init()
+                if literal > 0:
+                    self.g.add_edge(literal-1, m+self.N, weight=1, warning=wrng)
+                else:
+                    self.g.add_edge(-literal-1, m+self.N, weight=-1, warning=wrng)
+
+    def propagate(self, N_max):
+        for n in range(N_max):
+            pass
+
+    def plot_factorgraph(self):
+        import matplotlib.pyplot as plt
+        import networkx as nx
+        from networkx.algorithms import bipartite
+
+        pos = dict()
+        pos.update( (i, (1, i)) for i in range(self.N) ) # put nodes from X at x=1
+        pos.update( (i, (2, i-self.N)) for i in range(self.N, self.N+self.M) ) # put nodes from Y at x=2
+        nx.draw_networkx_nodes(self.g, pos=pos, nodelist=range(self.N), node_shape='s', node_color='purple')
+        nx.draw_networkx_nodes(self.g, pos=pos, nodelist=range(self.N, self.N+self.M), node_shape='o', node_color='blue')
+        nx.draw_networkx_labels(self.g, pos)
+        my_edge_color = ['r' if self.g.get_edge_data(u, v)['weight'] > 0 else 'k' for u, v, in self.g.edges()]
+        nx.draw_networkx_edges(self.g, pos, edge_color=my_edge_color)
+        plt.show()
+
+# Miscelanious classes
+
+class Message:
+    def __init__(self, value = None) -> None:
+        self.value = value
+
+    def print(self):
+        print(self.value)
+    
+    def step_fnc(self, x):
+        return 0 if x <= 0 else 1
+
+class Warning( Message ):
+    def __init__(self, value = None) -> None:
+        super().__init__(value)
+
+    def random_init(self):
+        self.value = randint(0, 1)
+
+    def update(self, graph, clause_node_a, target_variable_node_i) -> None:
+        cavity_fields = []
+        Jj = []
+        neighbours = graph.neighbors(clause_node_a)
+        V_plus = [neighbour_j for neighbour_j in neighbours if graph.get_edge_data(clause_node_a, neighbour_j)['weight'] > 0 and neighbour_j != target_variable_node_i]
+        V_minus = [neighbour_j for neighbour_j in neighbours if neighbour_j not in V_plus and neighbour_j != target_variable_node_i]
+
+        for neighbour_j in graph.neighbors(clause_node_a):
+            if neighbour_j != target_variable_node_i:
+                Jj.append(1 if graph.get_edge_data(neighbour_j, clause_node_a)['weight'] > 0 else -1)
+                cavity_fields.append(sum([graph.get_edge_data(b, neighbour_j)['warning'].value for b in V_plus])-sum([graph.get_edge_data(b, neighbour_j)['warning'].value for b in V_minus]))
+    
+        self.value = np.prod( np.array([self.step_fnc(cavity_fields[j] * Jj[j]) for j in len(cavity_fields)]) )
