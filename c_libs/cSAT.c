@@ -2,12 +2,14 @@
  *      C\C++ library for CTDS simulations        *
  *                                                *
  *     Written by Aron Vizkeleti on 2021-12-10    *
- *           last modified 2022-02-03             *
+ *           last modified 2022-12-02             *
  *                                                *
  *  to compile use:                               *
  *  cc -std=c99 -fPIC -shared -o cSAT.so cSAT.c   *
  *                                                */
-
+#include <math.h>
+#define M_PI		3.14159265358979323846
+#define M_PI_2		1.57079632679489661923
 
 //Helper functions (not to be called from outside)
 
@@ -79,6 +81,81 @@ void rhs2(int N, int M, int c[], double y[], double result[]){
     for (int i = N; i < N+M; i++)
     {
         result[i] = y[i] * K_m_squared(i-N, s, c, N);
+    }
+}
+
+void rhs3(int N, int M, int c[], double y[], double result[]){
+    double *s = y;
+    double *a = y + N;
+
+    //MaxSAT constants
+    double b = 0.0725;
+    double alpha = M/N;
+    double a_ = 0.0;
+    for (int i = 0; i < M; i++) { a_ += a[i]; }
+    a_ = a_/M;
+    double constant_ = M_PI_2*b*alpha*a_;
+    
+    for (int i = 0; i < N; i++)
+    {
+        result[i] = gradV_i(i, s, a, c, N, M) + constant_*sin(M_PI*s[i]);
+    }
+    for (int i = N; i < N+M; i++)
+    {
+        result[i] = y[i] * K_m_squared(i-N, s, c, N);
+    }
+}
+
+void rhs4(int N, int M, int c[], double y[], double result[]){
+    double *s = y;
+    double *a = y + N;
+
+    //MaxSAT constants
+    double b = 0.0725;
+    double alpha = M/N;
+    double a_ = 0.0;
+    for (int i = 0; i < M; i++) { a_ += a[i]; }
+    a_ = a_/M;
+    double constant_ = M_PI_2*b*alpha*a_;
+    
+    for (int i = 0; i < N; i++)
+    {
+        result[i] = gradV_i(i, s, a, c, N, M) + constant_*sin(M_PI*s[i]); //switch the order of m, i
+    }
+    for (int i = N; i < N+M; i++)
+    {
+        result[i] = y[i] * K_m(i-N, s, c, N);
+    }
+}
+
+void rhs5(int N, int M, int c[], double y[], double result[]){
+    double *s = y;
+    double *a = y + N;
+    
+    for (int i = 0; i < N; i++)
+    {
+        result[i] = -gradV_i(i, s, a, c, N, M);
+    }
+    for (int i = N; i < N+M; i++)
+    {
+        result[i] = -y[i] * K_m_squared(i-N, s, c, N);
+    }
+}
+
+void rhs8(int N, int M, int c[], double y[], double result[]){
+    double *s = y;
+    double *a = y + N;
+
+    //Memorry supression constant
+    double lambda = 0.02;
+    
+    for (int i = 0; i < N; i++)     // Updating the soft-spin variables
+    {
+        result[i] = gradV_i(i, s, a, c, N, M);
+    }
+    for (int i = N; i < N+M; i++)     // Updating the auxiliary variables
+    {
+        result[i] = y[i] * ( K_m_squared(i-N, s, c, N) - lambda * log( y[i] ) );
     }
 }
 
