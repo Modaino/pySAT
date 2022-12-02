@@ -5,7 +5,7 @@
 #                                       #
 # Written by Áron Vízkeleti             #
 #       on 2021-10-10                   #
-#       last modified 2022-04-06        #
+#       last modified 2022-12-02        #
 #                                       #
 #########################################
 
@@ -29,8 +29,11 @@ RHS_TYPE_TWO = 2
 RHS_TYPE_THREE = 3
 RHS_TYPE_FOUR = 4
 RHS_TYPE_FIVE = 5
-RHS_TYPE_RECPREV = 6
-RHS_TYPE_POINTCHARGES = 7
+RHS_TYPE_SIX = 6 #Recurrance prevention
+RHS_TYPE_SEVEN = 7 #Point charges
+RHS_TYPE_EIGHT = 8 #Exponential memory supression
+RHS_TYPE_NINE = 9 #NOT YET DEFINED!
+RHS_TYPE_TEN = 10 #NOT YET DEFINED!
 
 #Numerical integrator(s)
 
@@ -134,7 +137,7 @@ class SAT(Problem):
         self.valid_solutions = None
         self.rhs_type = rhs_type
         self.alpha = None
-        if self.rhs_type == RHS_TYPE_RECPREV or self.rhs_type == RHS_TYPE_POINTCHARGES:
+        if self.rhs_type == RHS_TYPE_SIX or self.rhs_type == RHS_TYPE_SEVEN:
             self.tried_ortants = []
             self.tried_ortant_idx = 0
             self.rec_prev_factor = 1.0
@@ -189,6 +192,11 @@ class SAT(Problem):
             self.cSAT_functions.rhs3.restype = None
             self.cSAT_functions.rhs4.restype = None
             self.cSAT_functions.rhs5.restype = None
+            #self.cSAT_functions.rhs6.restype = None
+            #self.cSAT_functions.rhs7.restype = None
+            self.cSAT_functions.rhs8.restype = None
+            #self.cSAT_functions.rhs9.restype = None
+            #self.cSAT_functions.rhs10.restype = None
             self.cSAT_functions.jacobian1.restype = None
             self.cSAT_functions.jacobian2.restype = None
 
@@ -257,7 +265,7 @@ class SAT(Problem):
                 ds = (-1)*np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
                 da = (-1)*np.array([a[m]*(self.K(m, s)) for m in range(self.number_of_clauses)])
                 return np.concatenate((ds, da), axis=None)
-            elif self.rhs_type == RHS_TYPE_RECPREV:
+            elif self.rhs_type == RHS_TYPE_SIX:
                 if len(self.tried_ortants) > 2:
                     L = np.array(sum([s - sl for sl in self.tried_ortants]))
                     L = (self.rec_prev_factor / (np.linalg.norm(L)**3)) * L
@@ -269,7 +277,7 @@ class SAT(Problem):
                 ds = L + np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
                 da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
                 return np.concatenate((ds, da), axis=None)
-            elif self.rhs_type == RHS_TYPE_POINTCHARGES:
+            elif self.rhs_type == RHS_TYPE_SEVEN:
                 if len(self.tried_ortants) >= 1:
                     L = np.array(sum([s - sl for sl in self.tried_ortants]))
                     L = (self.rec_prev_factor / (np.linalg.norm(L)**3)) * L
@@ -279,6 +287,12 @@ class SAT(Problem):
                 da = np.zeros(self.number_of_clauses)
                 da[0] = len(self.tried_ortants) - a[0]
                 return np.concatenate((ds, da), axis=None)
+            elif self.rhs_type == RHS_TYPE_EIGHT:
+                lmdb = 0.02
+                ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
+                da = np.array([a[m]*(self.K(m, s)**2 - lmdb * np.log(a[m])) for m in range(self.number_of_clauses)])
+                return np.concatenate((ds, da), axis=None)
+
         else:
             clause_matrix = self.c.flatten().astype(np.int32) # c
             clause_matrix_pointer = clause_matrix.ctypes.data_as(POINTER(c_int))
@@ -287,7 +301,7 @@ class SAT(Problem):
             state_pointer = state.ctypes.data_as(POINTER(c_double))
 
             result = np.empty(self.number_of_variables + self.number_of_clauses)
-            result = result.astype(np.double) # s & a
+            result = result.astype(np.double) # empty vector of size (s & a)
             result_pointer = result.ctypes.data_as(POINTER(c_double))
             
             if self.rhs_type == RHS_TYPE_ONE:
@@ -300,6 +314,14 @@ class SAT(Problem):
                 self.cSAT_functions.rhs4(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_FIVE:
                 self.cSAT_functions.rhs5(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+            elif self.rhs_type == RHS_TYPE_SIX:
+                self.cSAT_functions.rhs6(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+            elif self.rhs_type == RHS_TYPE_SEVEN:
+                self.cSAT_functions.rhs7(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+            elif self.rhs_type == RHS_TYPE_EIGHT:
+                self.cSAT_functions.rhs8(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+            elif self.rhs_type == RHS_TYPE_NINE:
+                self.cSAT_functions.rhs9(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
             return result
     
     def K(self, m, s):
@@ -461,7 +483,7 @@ class SAT(Problem):
                 break
 
         if incorrect_flag:
-            if self.rhs_type == RHS_TYPE_RECPREV or self.rhs_type == RHS_TYPE_POINTCHARGES:
+            if self.rhs_type == RHS_TYPE_SIX or self.rhs_type == RHS_TYPE_SEVEN:
                 self.set_add(solution)
             return False #Solution does not solve the sat problem
         else:
