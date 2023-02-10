@@ -5,7 +5,7 @@
 #                                       #
 # Written by Áron Vízkeleti             #
 #       on 2021-10-10                   #
-#       last modified 2022-12-02        #
+#       last modified 2022-04-06        #
 #                                       #
 #########################################
 
@@ -123,7 +123,7 @@ class Lorenz(Problem):
 
 class SAT(Problem):
     """Class representation of the continuous dynamical system version of a boolean satisfiability ptoblem"""
-    def __init__(self, cnf_file_name, so_file_name, n = 15, alpha = 4.264, literal_number = 3, rhs_type = RHS_TYPE_ONE, planted = 3):
+    def __init__(self, cnf_file_name, so_file_name, n = 15, alpha = 4.264, literal_number = 3, rhs_type = RHS_TYPE_ONE, planted = 3, lmbd = 0.25):
         """
         Constructor
         @param cnf_file_name: cnf-file defining the problem, if set to None, generates a random problem
@@ -137,6 +137,7 @@ class SAT(Problem):
         self.valid_solutions = None
         self.rhs_type = rhs_type
         self.alpha = None
+        self.lmdb = lmbd
         if self.rhs_type == RHS_TYPE_SIX or self.rhs_type == RHS_TYPE_SEVEN:
             self.tried_ortants = []
             self.tried_ortant_idx = 0
@@ -195,10 +196,15 @@ class SAT(Problem):
             #self.cSAT_functions.rhs6.restype = None
             #self.cSAT_functions.rhs7.restype = None
             self.cSAT_functions.rhs8.restype = None
+            self.cSAT_functions.rhs8.argtypes = [c_int, c_int, c_double, POINTER(c_int), POINTER(c_double), POINTER(c_double)]
+
             #self.cSAT_functions.rhs9.restype = None
             #self.cSAT_functions.rhs10.restype = None
             self.cSAT_functions.jacobian1.restype = None
             self.cSAT_functions.jacobian2.restype = None
+
+            clause_matrix = self.c.flatten().astype(np.int32) # c
+            self.clause_matrix_pointer = clause_matrix.ctypes.data_as(POINTER(c_int))
 
     def Jakobian(self, y):
         """Jakobian matrix of the CTDS"""
@@ -213,9 +219,6 @@ class SAT(Problem):
             elif self.rhs_type == RHS_TYPE_TWO:
                 return np.array([[self.Jakobian_il(i, l, s, a) for l in range(N_)] for i in range(N_)])
         else:
-            clause_matrix = self.c.flatten().astype(np.int32) # c
-            clause_matrix_pointer = clause_matrix.ctypes.data_as(POINTER(c_int))
-
             state = y.astype(np.double) # s & a
             state_pointer = state.ctypes.data_as(POINTER(c_double))
 
@@ -224,10 +227,10 @@ class SAT(Problem):
             result_pointer = result.ctypes.data_as(POINTER(c_double))
         
             if self.rhs_type == RHS_TYPE_ONE:
-                self.cSAT_functions.jacobian1(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.jacobian1(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_TWO:
                 raise NotImplementedError
-                #self.cSAT_functions.jacobian2(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                #self.cSAT_functions.jacobian2(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             return result.reshape([N_+M_, N_+M_])
 
     def rhs(self, t, y):
@@ -278,25 +281,15 @@ class SAT(Problem):
                 da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
                 return np.concatenate((ds, da), axis=None)
             elif self.rhs_type == RHS_TYPE_SEVEN:
-                if len(self.tried_ortants) >= 1:
-                    L = np.array(sum([s - sl for sl in self.tried_ortants]))
-                    L = (self.rec_prev_factor / (np.linalg.norm(L)**3)) * L
-                else:
-                    L = np.zeros(self.number_of_variables)
-                ds = L
-                da = np.zeros(self.number_of_clauses)
-                da[0] = len(self.tried_ortants) - a[0]
-                return np.concatenate((ds, da), axis=None)
+                ds = np.array([sum(2*[np.exp(a[m])*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
+                dz = np.array([(self.K(m, s)**2 - self.lmdb * a[m]) for m in range(self.number_of_clauses)])
+                return np.concatenate((ds, dz), axis=None)
             elif self.rhs_type == RHS_TYPE_EIGHT:
-                lmdb = 0.02
                 ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
-                da = np.array([a[m]*(self.K(m, s)**2 - lmdb * np.log(a[m])) for m in range(self.number_of_clauses)])
+                da = np.array([a[m]*(self.K(m, s) - self.lmdb * np.log(a[m])) for m in range(self.number_of_clauses)])
                 return np.concatenate((ds, da), axis=None)
 
         else:
-            clause_matrix = self.c.flatten().astype(np.int32) # c
-            clause_matrix_pointer = clause_matrix.ctypes.data_as(POINTER(c_int))
-
             state = y.astype(np.double) # s & a
             state_pointer = state.ctypes.data_as(POINTER(c_double))
 
@@ -305,23 +298,23 @@ class SAT(Problem):
             result_pointer = result.ctypes.data_as(POINTER(c_double))
             
             if self.rhs_type == RHS_TYPE_ONE:
-                self.cSAT_functions.rhs1(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.rhs1(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_TWO:
-                self.cSAT_functions.rhs2(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.rhs2(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_THREE:
-                self.cSAT_functions.rhs3(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.rhs3(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_FOUR:
-                self.cSAT_functions.rhs4(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.rhs4(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_FIVE:
-                self.cSAT_functions.rhs5(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.rhs5(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_SIX:
-                self.cSAT_functions.rhs6(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.rhs6(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_SEVEN:
-                self.cSAT_functions.rhs7(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.rhs7(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_EIGHT:
-                self.cSAT_functions.rhs8(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.rhs8(self.number_of_variables, self.number_of_clauses, self.lmdb, self.clause_matrix_pointer, state_pointer, result_pointer)
             elif self.rhs_type == RHS_TYPE_NINE:
-                self.cSAT_functions.rhs9(self.number_of_variables, self.number_of_clauses, clause_matrix_pointer, state_pointer, result_pointer)
+                self.cSAT_functions.rhs9(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
             return result
     
     def K(self, m, s):
@@ -592,7 +585,7 @@ class SAT(Problem):
 #Numerical solver definition(s)
 
 class CTD:
-    def __init__(self, problem, integrator = None, initial_s = None, random_aux = False) -> None:
+    def __init__(self, problem, integrator = None, initial_s = None, random_aux = False, initial_aux = None) -> None:
         self.problem = problem
         self.state = np.empty(problem.number_of_variables + problem.number_of_clauses)
 
@@ -603,6 +596,8 @@ class CTD:
             self.state[0:problem.number_of_variables] = initial_s
         if random_aux == True:
             self.state[problem.number_of_variables:] = np.array( [random()*15 for i in range(self.problem.number_of_clauses)] )
+        elif initial_aux is not None:
+            self.state[problem.number_of_variables:] = initial_aux
         else:
             self.state[problem.number_of_variables:] = np.ones(self.problem.number_of_clauses)
         self.time = 0
@@ -666,7 +661,6 @@ class CTD:
             else:
                 return -1.0
         exit_hypersphere.terminal = False
-
 
         if exit_type == ORTANT:
             self.sol = solve_ivp(fun=self.problem.rhs,
@@ -816,6 +810,15 @@ class CTD:
                             events=exit_long,
                             atol=atol,
                             rtol=rtol)
+
+    def get_sol_time(self):
+        if self.solution_time is not None:
+            return self.solution_time
+        elif self.sol is not None:
+            return self.sol.t[-1]
+        else:
+            return None
+
 
     def get_ortant_path(self):
         pass
