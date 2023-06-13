@@ -5,7 +5,7 @@
 #                                       #
 # Written by Áron Vízkeleti             #
 #       on 2021-10-10                   #
-#       last modified 2022-04-06        #
+#       last modified 2023-06-01        #
 #                                       #
 #########################################
 
@@ -24,16 +24,21 @@ ORTANT = 0
 CONVERGENCE_RADIUS = -1
 NEGATIVE_AUX = -2
 HYPER_SPHERE = -3
-RHS_TYPE_ONE = 1
-RHS_TYPE_TWO = 2
-RHS_TYPE_THREE = 3
+
+RHS_TYPE_ONE = 1 # Original CTDS
+RHS_TYPE_TWO = 2 # CTDS with K_m squred
+RHS_TYPE_THREE = 3 # CTDS with K_m squared and central potential
 RHS_TYPE_FOUR = 4
 RHS_TYPE_FIVE = 5
 RHS_TYPE_SIX = 6 #Recurrance prevention
-RHS_TYPE_SEVEN = 7 #Point charges
+RHS_TYPE_SEVEN = 7 #Exponential memory supression with z
 RHS_TYPE_EIGHT = 8 #Exponential memory supression
-RHS_TYPE_NINE = 9 #NOT YET DEFINED!
-RHS_TYPE_TEN = 10 #NOT YET DEFINED!
+RHS_TYPE_NINE = 9 #No aux of any kind
+RHS_TYPE_TEN = 10 #Second order memory, inefficient
+RHS_TYPE_ELEVEN = 11 #Second order memory
+
+BIPARTITE_PLOT = 101
+SPRING_PLOT = 102
 
 #Numerical integrator(s)
 
@@ -131,7 +136,7 @@ class SAT(Problem):
         @param n: optional, number of variables in randomly generated problem
         @param alpha: optional, ration of clauses (w.r.t n) in randomly generated problem
         @param literal_number: optional, defines the length of clauses (default is 3)
-        @param rhs_type: optional, selects type of rhs (RHS_TYPE_ONE = 1) (RHS_TYPE_TWO = 2)
+        @param rhs_type: optional, selects type of rhs (RHS_TYPE_ONE = 1) (RHS_TYPE_TWO = 2) etc.
         """
         #Misc. init
         self.valid_solutions = None
@@ -194,17 +199,68 @@ class SAT(Problem):
             self.cSAT_functions.rhs4.restype = None
             self.cSAT_functions.rhs5.restype = None
             #self.cSAT_functions.rhs6.restype = None
-            #self.cSAT_functions.rhs7.restype = None
+            self.cSAT_functions.rhs7.restype = None
+            self.cSAT_functions.rhs7.argtypes = [c_int, c_int, c_double, POINTER(c_int), POINTER(c_double), POINTER(c_double)]
             self.cSAT_functions.rhs8.restype = None
             self.cSAT_functions.rhs8.argtypes = [c_int, c_int, c_double, POINTER(c_int), POINTER(c_double), POINTER(c_double)]
-
-            #self.cSAT_functions.rhs9.restype = None
-            #self.cSAT_functions.rhs10.restype = None
+            self.cSAT_functions.rhs9.restype = None
+            self.cSAT_functions.rhs10.restype = None
+            self.cSAT_functions.rhs11.restype = None
+            # For debugging only
             self.cSAT_functions.jacobian1.restype = None
             self.cSAT_functions.jacobian2.restype = None
+            self.cSAT_functions.K_m.restype = c_double
+            self.cSAT_functions.K_m.argtypes = [c_int, POINTER(c_double), POINTER(c_int), c_int]
+
 
             clause_matrix = self.c.flatten().astype(np.int32) # c
             self.clause_matrix_pointer = clause_matrix.ctypes.data_as(POINTER(c_int))
+
+        #Setting up the rhs funciton
+        if not self.cSAT_functions:
+            if self.rhs_type == RHS_TYPE_ONE:
+                self.rhs = self.rhs_type_one_py
+            elif self.rhs_type == RHS_TYPE_TWO:
+                self.rhs = self.rhs_type_two_py
+            elif self.rhs_type == RHS_TYPE_THREE:
+                self.rhs = self.rhs_type_three_py
+            elif self.rhs_type == RHS_TYPE_FOUR:
+                self.rhs = self.rhs_type_four_py
+            elif self.rhs_type == RHS_TYPE_FIVE:
+                self.rhs = self.rhs_type_five_py
+            elif self.rhs_type == RHS_TYPE_SIX:
+                self.rhs = self.rhs_type_six_py
+            elif self.rhs_type == RHS_TYPE_SEVEN:
+                self.rhs = self.rhs_type_seven_py
+            elif self.rhs_type == RHS_TYPE_EIGHT:
+                self.rhs = self.rhs_type_eight_py
+            elif self.rhs_type == RHS_TYPE_NINE:
+                self.rhs = self.rhs_type_nine_py
+            elif self.rhs_type == RHS_TYPE_TEN:
+                self.rhs = self.rhs_type_ten_py
+        else:
+            if self.rhs_type == RHS_TYPE_ONE:
+                self.rhs = self.rhs_type_one_c
+            elif self.rhs_type == RHS_TYPE_TWO:
+                self.rhs = self.rhs_type_two_c
+            elif self.rhs_type == RHS_TYPE_THREE:
+                self.rhs = self.rhs_type_three_c
+            elif self.rhs_type == RHS_TYPE_FOUR:
+                self.rhs = self.rhs_type_four_c
+            elif self.rhs_type == RHS_TYPE_FIVE:
+                self.rhs = self.rhs_type_five_c
+            elif self.rhs_type == RHS_TYPE_SIX:
+                self.rhs = self.rhs_type_six_c
+            elif self.rhs_type == RHS_TYPE_SEVEN:
+                self.rhs = self.rhs_type_seven_c
+            elif self.rhs_type == RHS_TYPE_EIGHT:
+                self.rhs = self.rhs_type_eight_c
+            elif self.rhs_type == RHS_TYPE_NINE:
+                self.rhs = self.rhs_type_eight_c
+            elif self.rhs_type == RHS_TYPE_TEN:
+                self.rhs = self.rhs_type_ten_c
+            elif self.rhs_type == RHS_TYPE_ELEVEN:
+                self.rhs = self.rhs_type_eleven_c
 
     def Jakobian(self, y):
         """Jakobian matrix of the CTDS"""
@@ -234,89 +290,9 @@ class SAT(Problem):
             return result.reshape([N_+M_, N_+M_])
 
     def rhs(self, t, y):
-        """Right-hand side of the differential equation defining the system"""
-        N_ = self.number_of_variables
-        if not self.cSAT_functions: #This condition should be moved outside of solver
-            s = y[:N_]
-            a = y[N_:]
-            if self.rhs_type == RHS_TYPE_ONE:
-                ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
-                da = np.array([a[m]*self.K(m, s) for m in range(self.number_of_clauses)])
-                return np.concatenate((ds, da), axis=None)
-            elif self.rhs_type == RHS_TYPE_TWO:
-                ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
-                da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
-                return np.concatenate((ds, da), axis=None)
-            elif self.rhs_type == RHS_TYPE_THREE:
-                b = 0.0725
-                a_ = sum(a)/self.number_of_clauses
-                constant = 0.5*pi*b*self.alpha * a_
-                ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
-                da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
-                return np.concatenate((ds, da), axis=None)
-            elif self.rhs_type == RHS_TYPE_FOUR or self.rhs_type == RHS_TYPE_FIVE:
-                b = 0.0725
-                a_ = sum(a)/len(a)
-                constant = 0.5*pi*b*self.alpha * a_
-                ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
-                da = np.array([a[m]*(self.K(m, s)) for m in range(self.number_of_clauses)])
-                return np.concatenate((ds, da), axis=None)
-            elif self.rhs_type == RHS_TYPE_FIVE:
-                b = 0.0725
-                a_ = sum(a)/len(a)
-                constant = 0.5*pi*b*self.alpha * a_
-                ds = (-1)*np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
-                da = (-1)*np.array([a[m]*(self.K(m, s)) for m in range(self.number_of_clauses)])
-                return np.concatenate((ds, da), axis=None)
-            elif self.rhs_type == RHS_TYPE_SIX:
-                if len(self.tried_ortants) > 2:
-                    L = np.array(sum([s - sl for sl in self.tried_ortants]))
-                    L = (self.rec_prev_factor / (np.linalg.norm(L)**3)) * L
-                else:
-                    L = np.zeros(self.number_of_variables)
-                b = 0.0725
-                a_ = sum(a)/self.number_of_clauses
-                constant = 0.5*pi*b*self.alpha * a_
-                ds = L + np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
-                da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
-                return np.concatenate((ds, da), axis=None)
-            elif self.rhs_type == RHS_TYPE_SEVEN:
-                ds = np.array([sum(2*[np.exp(a[m])*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
-                dz = np.array([(self.K(m, s)**2 - self.lmdb * a[m]) for m in range(self.number_of_clauses)])
-                return np.concatenate((ds, dz), axis=None)
-            elif self.rhs_type == RHS_TYPE_EIGHT:
-                ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
-                da = np.array([a[m]*(self.K(m, s) - self.lmdb * np.log(a[m])) for m in range(self.number_of_clauses)])
-                return np.concatenate((ds, da), axis=None)
+        """Right-hand side of the differential equation defining the system, to be overwritten in runtime"""
+        pass
 
-        else:
-            state = y.astype(np.double) # s & a
-            state_pointer = state.ctypes.data_as(POINTER(c_double))
-
-            result = np.empty(self.number_of_variables + self.number_of_clauses)
-            result = result.astype(np.double) # empty vector of size (s & a)
-            result_pointer = result.ctypes.data_as(POINTER(c_double))
-            
-            if self.rhs_type == RHS_TYPE_ONE:
-                self.cSAT_functions.rhs1(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
-            elif self.rhs_type == RHS_TYPE_TWO:
-                self.cSAT_functions.rhs2(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
-            elif self.rhs_type == RHS_TYPE_THREE:
-                self.cSAT_functions.rhs3(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
-            elif self.rhs_type == RHS_TYPE_FOUR:
-                self.cSAT_functions.rhs4(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
-            elif self.rhs_type == RHS_TYPE_FIVE:
-                self.cSAT_functions.rhs5(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
-            elif self.rhs_type == RHS_TYPE_SIX:
-                self.cSAT_functions.rhs6(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
-            elif self.rhs_type == RHS_TYPE_SEVEN:
-                self.cSAT_functions.rhs7(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
-            elif self.rhs_type == RHS_TYPE_EIGHT:
-                self.cSAT_functions.rhs8(self.number_of_variables, self.number_of_clauses, self.lmdb, self.clause_matrix_pointer, state_pointer, result_pointer)
-            elif self.rhs_type == RHS_TYPE_NINE:
-                self.cSAT_functions.rhs9(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
-            return result
-    
     def K(self, m, s):
         """Clause term, as defined in nature physics letter doi:10.1038/NPHY2105"""
         return pow(2, -self.number_of_literals[m])*np.prod([( 1-self.c[m,j] * s[j] ) for j in range(self.number_of_variables)])
@@ -365,6 +341,12 @@ class SAT(Problem):
         return used_in.index(min(used_in))+1
 
     def generate_planted_problem(self, N, M, S, literal_number):
+        """Generates a sat problem with constant clause length, with planted solutions. Note that there can be 'unplanted' solutions.
+        @param literal_number: The length of each clause
+        @param N: Number of variables
+        @param M: Number of clauses
+        @param S: Number of planted solutions
+        """
         def compatible(clause, solutions):
             if clause is None:
                 return False
@@ -401,6 +383,7 @@ class SAT(Problem):
         return clauses
 
     def downconvert_4_3(self):
+        """Converts a 4SAT problem into a 3SAT problem"""
         new_clauses = []
         N = self.number_of_variables
         
@@ -416,6 +399,7 @@ class SAT(Problem):
         self.valid_solutions = None
 
     def down_convert_clause(self, clause_idx):
+        """Converts a clause of length greater than 3 to a smaller clause. NOT FINISHED"""
         old_clause = self.clauses[clause_idx]
         k = len(old_clause)
         N = self.number_of_variables
@@ -444,6 +428,7 @@ class SAT(Problem):
             mFile.writelines(lines)
 
     def get_alpha(self):
+        """Returns the ratio of clauses to variables, and saves it into a member variable if it is not saved already."""
         if not self.alpha:
             self.alpha = self.number_of_clauses/self.number_of_variables
         return self.alpha
@@ -482,6 +467,18 @@ class SAT(Problem):
         else:
             #self.solution = "".join(['1' if elem else '0' for elem in test_solution])
             return True #Solutions solves the problem
+
+    def get_number_of_satisfied_clauses(self, discrete_state):
+        """Returns the number of satisfied clauses given a state in discretized form (list of plus minus ones)"""
+        result = 0
+        for clause in self.clauses:
+            for literal in clause:
+                variable_idx = abs(literal)
+                expected_truth_value = 1 if (literal > 0) else -1
+                if expected_truth_value ==  discrete_state[variable_idx-1]:
+                    result += 1
+                    break
+        return result
 
     def all_solutions(self):
         """Returns a list of all solutions in a list. This uses gready algorithm, do not use for big problems"""
@@ -580,35 +577,256 @@ class SAT(Problem):
         else:
             return False
             
+    # RHS funcitons
+    
+    def rhs_type_one_c(self, t, y):
+        state = y.astype(np.double) # s & a
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (s & a)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs1(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_one_py(self, t, y):
+        N_ = self.number_of_variables
+        s = y[:N_]
+        a = y[N_:]
+        ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
+        da = np.array([a[m]*self.K(m, s) for m in range(self.number_of_clauses)])
+        return np.concatenate((ds, da), axis=None)
+
+    def rhs_type_two_c(self, t, y):
+        state = y.astype(np.double) # s & a
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (s & a)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs2(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_two_py(self, t, y):
+        N_ = self.number_of_variables
+        s = y[:N_]
+        a = y[N_:]
+        ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
+        da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
+        return np.concatenate((ds, da), axis=None)
+
+    def rhs_type_three_c(self, t, y):
+        state = y.astype(np.double) # s & a
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (s & a)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs3(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_three_py(self, t, y):
+        N_ = self.number_of_variables
+        s = y[:N_]
+        a = y[N_:]
+        b = 0.0725
+        a_ = sum(a)/self.number_of_clauses
+        constant = 0.5*pi*b*self.alpha * a_
+        ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
+        da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
+        return np.concatenate((ds, da), axis=None)
+
+    def rhs_type_four_c(self, t, y):
+        state = y.astype(np.double) # s & a
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (s & a)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs4(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_four_py(self, t, y):
+        N_ = self.number_of_variables
+        s = y[:N_]
+        a = y[N_:]
+        b = 0.0725
+        a_ = sum(a)/len(a)
+        constant = 0.5*pi*b*self.alpha * a_
+        ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
+        da = np.array([a[m]*(self.K(m, s)) for m in range(self.number_of_clauses)])
+        return np.concatenate((ds, da), axis=None)
+
+    def rhs_type_five_c(self, t, y):
+        state = y.astype(np.double) # s & a
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (s & a)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs5(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_five_py(self, t, y):
+        N_ = self.number_of_variables
+        s = y[:N_]
+        a = y[N_:]
+        b = 0.0725
+        a_ = sum(a)/len(a)
+        constant = 0.5*pi*b*self.alpha * a_
+        ds = (-1)*np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
+        da = (-1)*np.array([a[m]*(self.K(m, s)) for m in range(self.number_of_clauses)])
+        return np.concatenate((ds, da), axis=None)
+
+    def rhs_type_six_c(self, t, y):
+        state = y.astype(np.double) # s & a
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (s & a)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs6(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_six_py(self, t, y):
+        N_ = self.number_of_variables
+        s = y[:N_]
+        a = y[N_:]
+        if len(self.tried_ortants) > 2:
+            L = np.array(sum([s - sl for sl in self.tried_ortants]))
+            L = (self.rec_prev_factor / (np.linalg.norm(L)**3)) * L
+        else:
+            L = np.zeros(self.number_of_variables)
+        b = 0.0725
+        a_ = sum(a)/self.number_of_clauses
+        constant = 0.5*pi*b*self.alpha * a_
+        ds = L + np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) + constant*sin(pi*s[i])  for i in range(self.number_of_variables) ])
+        da = np.array([a[m]*(self.K(m, s)**2) for m in range(self.number_of_clauses)])
+        return np.concatenate((ds, da), axis=None)
+
+    def rhs_type_seven_c(self, t, y):
+        state = y.astype(np.double) # s & a
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (s & a)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs7(self.number_of_variables, self.number_of_clauses, self.lmdb, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_seven_py(self, t, y):
+        N_ = self.number_of_variables
+        s = y[:N_]
+        z = y[N_:]
+        ds = np.array([sum( 2*[np.exp(z[m])*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
+        dz = np.array([(self.K(m, s) - self.lmdb * z[m]) for m in range(self.number_of_clauses)])
+        return np.concatenate((ds, dz), axis=None)
+
+    def rhs_type_eight_c(self, t, y):
+        state = y.astype(np.double) # s & a
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (s & a)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs8(self.number_of_variables, self.number_of_clauses, self.lmdb, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_eight_py(self, t, y):
+        N_ = self.number_of_variables
+        s = y[:N_]
+        a = y[N_:]
+        ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
+        da = np.array([a[m]*(self.K(m, s)**2 - self.lmdb * np.log(a[m])) for m in range(self.number_of_clauses)])
+        return np.concatenate((ds, da), axis=None)
+
+    def rhs_type_nine_c(self, t, y):
+        state = y.astype(np.double) # s & a
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (s & a)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs9(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_nine_py(self, t, y):
+        N_ = self.number_of_variables
+        s = y[:N_]
+        a = y[N_:]
+        ds = np.array([sum(2*[a[m]*self.c[m, i]* (1-self.c[m, i]*s[i]) *(self.k(m, i, s)**2) for m in range(self.number_of_clauses)]) for i in range(self.number_of_variables) ])
+        da = np.zeros(self.number_of_clauses)
+        return np.concatenate((ds, da), axis=None)
+
+    def rhs_type_ten_py(self, t, y):
+        N_ = self.number_of_variables
+        M_ = self.number_of_clauses
+        s = y[:N_]
+        b = y[N_:]
+
+        ds = np.empty(N_)
+        for i in range(N_):
+            summ = s[i]
+            for m in range(M_):
+                for n in range(M_):
+                    summ += b[m*M_ + n] * ( self.c[m,i] * (1-s[i]*self.c[m, i])*pow(self.k(m, i, s), 2) + self.c[n, i] * (1-s[i]*self.c[n, i])*pow(self.k(n, i, s), 2))
+            ds[i] = summ
+        
+        db = np.array([b[i] * self.K(int(i/M_), s) * self.K(i % M_, s) for i in range(M_*M_)])
+
+        return np.concatenate((ds, db), axis=None)
+
+    def rhs_type_ten_c(self, t, y):
+        state = y.astype(np.double) # s & b
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.zeros(self.number_of_variables + self.number_of_clauses*self.number_of_clauses)
+        result = result.astype(np.double) # empty vector of size (N+M^2)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs10(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
+
+    def rhs_type_eleven_c(self, t, y):
+        state = y.astype(np.double) # s & b_flattened
+        state_pointer = state.ctypes.data_as(POINTER(c_double))
+        result = np.empty(self.number_of_variables + int(self.number_of_clauses*(self.number_of_clauses+1)/2))
+        result = result.astype(np.double) # empty vector of size (N+M+M^2)
+        result_pointer = result.ctypes.data_as(POINTER(c_double))
+        self.cSAT_functions.rhs11(self.number_of_variables, self.number_of_clauses, self.clause_matrix_pointer, state_pointer, result_pointer)
+        return result
 
 
 #Numerical solver definition(s)
 
 class CTD:
-    def __init__(self, problem, integrator = None, initial_s = None, random_aux = False, initial_aux = None) -> None:
+    def __init__(self, problem, integrator = None, initial_s = None, random_aux = False, initial_aux = None, initial_baux = None) -> None:
+        """Constructor for the Continuous Time SAT solver"""
+        
         self.problem = problem
-        self.state = np.empty(problem.number_of_variables + problem.number_of_clauses)
+        N = problem.number_of_variables
+        M = problem.number_of_clauses
 
         #Dynamical variables
+        if self.problem.rhs_type < RHS_TYPE_TEN:
+            self.state = np.ones(N+M)
+            if random_aux == True:
+                self.state[N:] = np.array( [random()*15 for i in range(M)] )
+            elif initial_aux is not None:
+                self.state[N:] = initial_aux
+        else:
+            if self.problem.rhs_type == RHS_TYPE_TEN:
+                self.state = np.ones(N + M*M)
+            elif self.problem.rhs_type == RHS_TYPE_ELEVEN:
+                self.state = np.ones(N + int(M*(M+1)/2))
+
+            if initial_baux is not None:
+                self.state[N:] = initial_baux
+            
+
         if initial_s is None:
-            self.state[0:problem.number_of_variables] = np.array([2*random() -1 for i in range(problem.number_of_variables)])
+            self.state[0:N] = 2*np.random.rand(N) - np.ones(N)
         else:
-            self.state[0:problem.number_of_variables] = initial_s
-        if random_aux == True:
-            self.state[problem.number_of_variables:] = np.array( [random()*15 for i in range(self.problem.number_of_clauses)] )
-        elif initial_aux is not None:
-            self.state[problem.number_of_variables:] = initial_aux
-        else:
-            self.state[problem.number_of_variables:] = np.ones(self.problem.number_of_clauses)
-        self.time = 0
+            self.state[0:N] = initial_s
 
         #Records
+        self.time = 0
         self.aux = []
         self.solutions = []
         self.solution_time = None
         self.inside_hypersphere = None
+        self.sol_length = None
 
-    def fast_solve(self, t_max, exit_type = ORTANT, solver_type = 'BDF', atol=0.000001, rtol=0.001, hypersphere_radius = 1.0) -> None :
+    def fast_solve(self, t_max, exit_type = ORTANT, solver_type = 'BDF', atol=0.0001, rtol=0.001, hypersphere_radius = 1.0) -> None :
         """
         Solver function, using predefined integrator (default is scipy)
         @param t_max: maximum analog time
@@ -660,7 +878,15 @@ class CTD:
                 return 1.0
             else:
                 return -1.0
-        exit_hypersphere.terminal = False
+        enter_hypersphere.terminal = False
+
+        def exit_hypercube(t, y) -> float:
+            for coord in y[:self.problem.number_of_variables]:
+                if coord < 1:
+                    return 1.0
+                return -1.0
+        exit_hypercube.terminal = True
+            
 
         if exit_type == ORTANT:
             self.sol = solve_ivp(fun=self.problem.rhs,
@@ -669,7 +895,7 @@ class CTD:
                             method=solver_type,
                             t_eval=None,
                             dense_output=False,
-                            events=exit_ortant,
+                            events=[exit_ortant,exit_hypercube],
                             atol=atol,
                             rtol=rtol)
         elif exit_type == CONVERGENCE_RADIUS:
@@ -735,9 +961,9 @@ class CTD:
             return None
         else:
             C_of_t = []
-            for elem in self.sol.y:
-                solution_vec = np.array([1 if spin is True else -1 for spin in elem[:self.problem.number_of_variables]])
-                print(solution_vec)
+            for elem in np.transpose(self.sol.y):
+                solution_vec = np.array([1 if spin > 0 else -1 for spin in elem[:self.problem.number_of_variables]])
+                C_of_t.append(self.problem.get_number_of_satisfied_clauses(solution_vec))
             return (self.sol.t, C_of_t)
 
     def lyapunov_solve(self, t_max, exit_type = 0, solver_type = 'BDF', atol=0.000001, rtol=0.000001) -> None :
@@ -819,6 +1045,23 @@ class CTD:
         else:
             return None
 
+    def get_sol_length(self):
+        """Returns a numpy list of cummulative trajectory lengths"""
+        if self.sol is not None:
+            if self.sol_length is None:
+                N = self.problem.number_of_variables
+                nbr_points = len(self.sol.t)
+                result = np.zeros(nbr_points)
+                for idx in range(nbr_points):
+                    if idx < nbr_points-1:
+                        p2 = self.sol.y[0:N, idx+1]
+                        p1 = self.sol.y[0:N, idx]
+                        sum_of_squares = np.sum(np.square(p2-p1))
+                        result[idx+1] = result[idx] + np.sqrt(sum_of_squares) 
+                self.sol_length = result
+            return self.sol_length
+        else:
+            return None
 
     def get_ortant_path(self):
         pass
@@ -851,14 +1094,19 @@ class Warning_propagator:
         for n in range(N_max):
             pass
 
-    def plot_factorgraph(self):
+    def plot_factorgraph(self, plot_algorithm):
         import matplotlib.pyplot as plt
         import networkx as nx
         from networkx.algorithms import bipartite
 
         pos = dict()
-        pos.update( (i, (1, i)) for i in range(self.N) ) # put nodes from X at x=1
-        pos.update( (i, (2, i-self.N)) for i in range(self.N, self.N+self.M) ) # put nodes from Y at x=2
+
+        if plot_algorithm == BIPARTITE_PLOT:
+            pos.update( (i, (1, i)) for i in range(self.N) ) # put nodes from X at x=1
+            pos.update( (i, (2, i-self.N)) for i in range(self.N, self.N+self.M) ) # put nodes from Y at x=2
+        elif plot_algorithm == SPRING_PLOT:
+            pos = nx.spring_layout(self.g)
+
         nx.draw_networkx_nodes(self.g, pos=pos, nodelist=range(self.N), node_shape='s', node_color='purple')
         nx.draw_networkx_nodes(self.g, pos=pos, nodelist=range(self.N, self.N+self.M), node_shape='o', node_color='blue')
         nx.draw_networkx_labels(self.g, pos)
